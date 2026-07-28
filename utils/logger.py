@@ -1,86 +1,156 @@
+"""Structured logging and English chart generation for AI-RAN experiments."""
 import csv
 import json
 import os
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+
 class SimulationLogger:
-    """
-    6G AI-RAN 仿真数据日志记录器
-    用于记录 150 轮潮汐演进中各个基线算法的性能指标，并导出为标准格式供后续论文绘图使用。
-    """
-    def __init__(self, log_dir="logs"):
+    """Collect experiment records and export portable data and publication-ready figures."""
+
+    def __init__(self, log_dir="logs", run_name="scenario_a"):
         self.log_dir = log_dir
-        if not os.path.exists(self.log_dir):
-            os.makedirs(self.log_dir)
-        
-        # 存储所有算法的仿真记录
-        # 结构: { "算法名称": [ { 记录字典 }, ... ] }
+        self.run_name = run_name
+        os.makedirs(self.log_dir, exist_ok=True)
         self.records = {}
+        self.metadata = {}
+
+    def set_metadata(self, **metadata):
+        self.metadata.update(metadata)
+
+    def log_metrics(self, algo_name, **metrics):
+        if "epoch" not in metrics:
+            raise ValueError("every log record must include epoch")
+        self.records.setdefault(algo_name, []).append(dict(metrics))
 
     def log_step(self, algo_name, epoch, n_clients, n_migs, bandwidth, total_delay, tx_delay=0.0, comp_delay=0.0):
-        """
-        记录单个算法在当前 Epoch 的所有关键物理状态与性能反馈。
-        
-        参数:
-        - algo_name: 算法名称 (例如 'MAT-RL', 'Adapted-CPSL')
-        - epoch: 当前通信轮次 (1~150)
-        - n_clients: 当前时隙活跃车辆数 N(t)
-        - n_migs: 当前可用虚拟簇 (MIG) 切片数
-        - bandwidth: 当前系统总带宽 (Hz)
-        - total_delay: 系统单轮总时延，即木桶效应后最慢簇的时延 (秒)
-        - tx_delay: (可选) 最大传输时延分量 (秒)
-        - comp_delay: (可选) 最大计算时延分量 (秒)
-        """
-        if algo_name not in self.records:
-            self.records[algo_name] = []
-            
-        record = {
-            "epoch": epoch,
-            "n_clients": n_clients,
-            "n_migs": n_migs,
-            "bandwidth_mhz": round(bandwidth / 1e6, 2),  # 转换为 MHz 方便阅读
-            "total_delay_ms": round(total_delay * 1000, 4), # 转换为毫秒(ms) 方便与论文图 1-1 纵坐标对齐
-            "tx_delay_ms": round(tx_delay * 1000, 4),
-            "comp_delay_ms": round(comp_delay * 1000, 4)
-        }
+        """Compatibility wrapper for the original simulation runner."""
+        self.log_metrics(
+            algo_name,
+            epoch=int(epoch),
+            vehicle_count=int(n_clients),
+            available_migs=int(n_migs),
+            bandwidth_hz=float(bandwidth),
+            total_delay_ms=float(total_delay) * 1000.0,
+            tx_delay_ms=float(tx_delay) * 1000.0,
+            compute_delay_ms=float(comp_delay) * 1000.0,
+        )
 
-        print(f"[Logger] {algo_name} | Epoch {epoch}: N={n_clients}, MIGs={n_migs}, BW={record['bandwidth_mhz']} MHz, Total Delay={record['total_delay_ms']} ms")
-        
-        self.records[algo_name].append(record)
+    def _timestamp(self):
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    def export_to_csv(self, filename_prefix="simulation_results"):
-        """将记录导出为 CSV 文件（按算法拆分为多个文件，适合 Excel/Origin 导入画图）"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        exported_files = []
-        
-        for algo_name, data in self.records.items():
-            if not data:
+    def export_to_csv(self, filename_prefix=None):
+        timestamp = self._timestamp()
+        prefix = filename_prefix or self.run_name
+        exported = []
+        for algo_name, rows in self.records.items():
+            if not rows:
                 continue
-                
-            # 过滤掉特殊字符以作文件名
-            safe_algo_name = algo_name.replace(" ", "_").replace("-", "_")
-            filename = os.path.join(self.log_dir, f"{filename_prefix}_{safe_algo_name}_{timestamp}.csv")
-            
-            # 提取表头
-            fieldnames = data[0].keys()
-            
-            with open(filename, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
+            fieldnames = sorted({key for row in rows for key in row})
+            safe_name = algo_name.replace(" ", "_").replace("-", "_")
+            path = os.path.join(self.log_dir, f"{prefix}_{safe_name}_{timestamp}.csv")
+            with open(path, "w", newline="", encoding="utf-8") as file:
+                writer = csv.DictWriter(file, fieldnames=fieldnames, extrasaction="ignore")
                 writer.writeheader()
-                writer.writerows(data)
-                
-            exported_files.append(filename)
-            
-        print(f"[Logger] 仿真数据已成功导出至 CSV: {self.log_dir} 目录下")
-        return exported_files
+                writer.writerows(rows)
+            exported.append(path)
+        return exported
 
-    def export_to_json(self, filename="simulation_results.json"):
-        """将所有算法的对比记录导出为单一 JSON 文件（适合 Python/Matplotlib 画图脚本一次性读取比对）"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(self.log_dir, f"{filename.split('.')[0]}_{timestamp}.json")
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(self.records, f, indent=4, ensure_ascii=False)
-            
-        print(f"[Logger] 仿真结构化数据已成功导出至 JSON: {filepath}")
-        return filepath
+    def export_to_json(self, filename_prefix=None):
+        timestamp = self._timestamp()
+        prefix = filename_prefix or self.run_name
+        path = os.path.join(self.log_dir, f"{prefix}_{timestamp}.json")
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump({"metadata": self.metadata, "records": self.records}, file, indent=2)
+        return path
+
+    @staticmethod
+    def _rolling_mean(values, window):
+        return np.asarray([
+            np.mean(values[max(0, index - window + 1):index + 1])
+            for index in range(len(values))
+        ])
+
+    def plot_scenario_a(self, algo_name, filename_prefix=None, warmup_epochs=0, rolling_window=5):
+        """Create English Scenario-A figures excluding configured warmup rounds."""
+        rows = self.records.get(algo_name, [])
+        if not rows:
+            raise ValueError(f"no records available for {algo_name}")
+        rows = [
+            row for row in rows
+            if not row.get("is_warmup", False) and row["epoch"] > warmup_epochs
+        ]
+        if not rows:
+            raise ValueError("no post-warmup records available for plotting")
+        prefix = filename_prefix or self.run_name
+        by_epoch = {}
+        for row in rows:
+            by_epoch.setdefault(row["epoch"], []).append(row)
+        epochs = sorted(by_epoch)
+        delay_samples = [np.asarray([row["total_delay_ms"] for row in by_epoch[epoch]], dtype=float) for epoch in epochs]
+        reward_samples = [np.asarray([row["reward"] for row in by_epoch[epoch]], dtype=float) for epoch in epochs]
+        mean_delay = np.asarray([sample.mean() for sample in delay_samples])
+        mean_reward = np.asarray([sample.mean() for sample in reward_samples])
+        delay_ci = np.asarray([1.96 * sample.std(ddof=1) / np.sqrt(len(sample)) if len(sample) > 1 else 0.0 for sample in delay_samples])
+        reward_ci = np.asarray([1.96 * sample.std(ddof=1) / np.sqrt(len(sample)) if len(sample) > 1 else 0.0 for sample in reward_samples])
+        delay_rolling = self._rolling_mean(mean_delay, rolling_window)
+        reward_rolling = self._rolling_mean(mean_reward, rolling_window)
+        mean_loss = np.asarray([
+            np.mean([row["train_loss"] for row in by_epoch[epoch] if row.get("train_loss") is not None])
+            if any(row.get("train_loss") is not None for row in by_epoch[epoch]) else np.nan
+            for epoch in epochs
+        ])
+
+        generated = []
+        fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True, constrained_layout=True)
+        axes[0].plot(epochs, delay_rolling, color="#1f77b4", linewidth=2, label=f"{rolling_window}-round mean delay")
+        axes[0].fill_between(epochs, mean_delay - delay_ci, mean_delay + delay_ci, color="#1f77b4", alpha=0.18, label="95% station CI")
+        axes[0].axvline(100, color="#d62728", linestyle="--", label="Resource shock")
+        axes[0].set_ylabel("Delay (ms)")
+        axes[0].set_title("Scenario A: MAT-RL Latency and Reward")
+        axes[0].grid(alpha=0.3)
+        axes[0].legend()
+        axes[1].plot(epochs, reward_rolling, color="#2ca02c", linewidth=2, label=f"{rolling_window}-round mean reward")
+        axes[1].fill_between(epochs, mean_reward - reward_ci, mean_reward + reward_ci, color="#2ca02c", alpha=0.18, label="95% station CI")
+        axes[1].set_xlabel("Communication round")
+        axes[1].set_ylabel("Reward")
+        axes[1].grid(alpha=0.3)
+        axes[1].legend()
+        path = os.path.join(self.log_dir, f"{prefix}_latency_reward.png")
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        generated.append(path)
+
+        fig, axis = plt.subplots(figsize=(8, 3.5), constrained_layout=True)
+        for station_id, color in ((1, "#9467bd"), (2, "#ff7f0e"), (3, "#17becf")):
+            resources = [next(row for row in by_epoch[epoch] if row["station_id"] == station_id) for epoch in epochs]
+            axis.step(epochs, [row["available_migs"] for row in resources], where="post", linewidth=2, color=color, label=f"Station {station_id}: available MIGs")
+        axis.set_title("Scenario A: Available MIG Tide")
+        axis.set_xlabel("Communication round")
+        axis.set_ylabel("Available MIGs")
+        axis.set_ylim(0, 8)
+        axis.grid(alpha=0.3)
+        axis.legend(ncol=3, fontsize=8)
+        path = os.path.join(self.log_dir, f"{prefix}_mig_tide.png")
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        generated.append(path)
+
+        if np.isfinite(mean_loss).any():
+            fig, axis = plt.subplots(figsize=(8, 3.5), constrained_layout=True)
+            axis.plot(epochs, self._rolling_mean(mean_loss, rolling_window), color="#8c564b", linewidth=2, label=f"{rolling_window}-round mean loss")
+            axis.set_title("Scenario A: USFL Training Loss")
+            axis.set_xlabel("Communication round")
+            axis.set_ylabel("Cross-entropy loss")
+            axis.grid(alpha=0.3)
+            axis.legend()
+            path = os.path.join(self.log_dir, f"{prefix}_training_loss.png")
+            fig.savefig(path, dpi=200)
+            plt.close(fig)
+            generated.append(path)
+        return generated

@@ -5,13 +5,7 @@ from .scenario_specs import ScenarioSpec, get_scenario_spec
 
 
 class LiquidAIRANEnv:
-    """Generates one base station's state and resource tide for a named scenario.
-
-    One environment instance represents one of the three stations. Coordinators
-    should create three instances with identical scenario names and station IDs
-    1, 2 and 3. The returned vehicle IDs are stable in fixed-participation
-    scenarios and may vary only in scenarios C and D.
-    """
+    """Generate one base station's state and resource tide for a named scenario."""
 
     def __init__(
         self,
@@ -22,6 +16,7 @@ class LiquidAIRANEnv:
         scenario: str | ScenarioSpec = "A",
         station_id=1,
         seed=None,
+        vehicle_id_offset=0,
     ):
         self.data_provider = data_provider
         self.scenario = get_scenario_spec(scenario)
@@ -31,27 +26,34 @@ class LiquidAIRANEnv:
         self.base_bandwidth = float(base_bandwidth)
         self.max_vehicles = int(max_vehicles or self.scenario.max_clients)
         self.max_migs = int(max_migs or self.scenario.max_migs)
+        self.vehicle_id_offset = int(vehicle_id_offset)
         if self.max_vehicles < self.scenario.max_clients:
             raise ValueError("max_vehicles cannot be smaller than the scenario maximum")
         if self.max_migs < self.scenario.max_migs:
             raise ValueError("max_migs cannot be smaller than the scenario maximum")
         if self.base_bandwidth <= 0.0:
             raise ValueError("base_bandwidth must be positive")
+        if self.vehicle_id_offset < 0 or self.vehicle_id_offset + self.max_vehicles > data_provider.num_clients:
+            raise ValueError("vehicle ID range must be available from data_provider")
 
         self.current_epoch = 0
         self.max_epochs = self.scenario.total_epochs
         self.current_N = 0
         self.current_migs = 2
         self.current_bandwidth = self.base_bandwidth
+        self.vehicle_pool_ids = np.arange(
+            self.vehicle_id_offset, self.vehicle_id_offset + self.max_vehicles, dtype=np.int64
+        )
+        self.active_vehicle_slots = np.empty(0, dtype=np.int64)
         self.active_vehicle_ids = np.empty(0, dtype=np.int64)
         self.vehicle_pool_computes = self.rng.uniform(1.0, 2.5, size=self.max_vehicles)
         self.vehicle_pool_labels = np.asarray(
-            [data_provider.get_client_label_dist(vehicle_id) for vehicle_id in range(self.max_vehicles)],
+            [data_provider.get_client_label_dist(vehicle_id) for vehicle_id in self.vehicle_pool_ids],
             dtype=np.float64,
         )
         if self.vehicle_pool_labels.shape != (self.max_vehicles, self.num_classes):
             raise ValueError("data_provider label distributions must have shape (num_clients, num_classes)")
-        self._fixed_vehicle_ids = self.rng.choice(
+        self._fixed_vehicle_slots = self.rng.choice(
             self.max_vehicles, size=self.scenario.fixed_client_count or 1, replace=False
         )
 
@@ -61,7 +63,7 @@ class LiquidAIRANEnv:
         return self._set_epoch_state()
 
     def step(self):
-        """Advance one communication round and return state, MIGs, bandwidth, and IDs."""
+        """Advance one communication round and return state, MIGs, bandwidth, and global IDs."""
         if self.current_epoch >= self.max_epochs:
             raise RuntimeError("scenario horizon exhausted; call reset() before stepping again")
         self.current_epoch += 1
@@ -71,31 +73,32 @@ class LiquidAIRANEnv:
         resources = self.scenario.resources_for(self.station_id, self.current_epoch)
         self.current_migs = resources.available_migs
         self.current_bandwidth = self.base_bandwidth * resources.bandwidth_scale
-        self.active_vehicle_ids = self._select_active_vehicle_ids()
+        self.active_vehicle_slots = self._select_active_vehicle_slots()
+        self.active_vehicle_ids = self.vehicle_pool_ids[self.active_vehicle_slots]
         self.current_N = len(self.active_vehicle_ids)
         return self._generate_state_for_active_vehicles(), self.current_migs, self.current_bandwidth, self.active_vehicle_ids.copy()
 
-    def _select_active_vehicle_ids(self):
+    def _select_active_vehicle_slots(self):
         if not self.scenario.dynamic_participation:
-            return self._fixed_vehicle_ids.copy()
+            return self._fixed_vehicle_slots.copy()
         low, high = self.scenario.dynamic_client_range
         client_count = int(self.rng.integers(low, high + 1))
-        active_ids = self.rng.choice(self.max_vehicles, size=client_count, replace=False)
+        active_slots = self.rng.choice(self.max_vehicles, size=client_count, replace=False)
         if self.scenario.name == "D" and self.current_epoch >= self.scenario.rare_label_departure_epoch:
             if self.station_id == 1:
-                active_ids = active_ids[active_ids != 0]
-                if len(active_ids) < client_count:
-                    candidates = np.setdiff1d(np.arange(1, self.max_vehicles), active_ids, assume_unique=False)
-                    active_ids = np.append(active_ids, self.rng.choice(candidates))
-            elif self.station_id == 2 and 0 not in active_ids:
-                active_ids[0] = 0
-        return np.asarray(active_ids, dtype=np.int64)
+                active_slots = active_slots[active_slots != 0]
+                if len(active_slots) < client_count:
+                    candidates = np.setdiff1d(np.arange(1, self.max_vehicles), active_slots, assume_unique=False)
+                    active_slots = np.append(active_slots, self.rng.choice(candidates))
+            elif self.station_id == 2 and 0 not in active_slots:
+                active_slots[0] = 0
+        return np.asarray(active_slots, dtype=np.int64)
 
     def _generate_state_for_active_vehicles(self):
         client_count = self.current_N
         channel_gains = self.rng.rayleigh(scale=1.0, size=(client_count, 1))
-        computes = self.vehicle_pool_computes[self.active_vehicle_ids].reshape(client_count, 1)
-        labels = self.vehicle_pool_labels[self.active_vehicle_ids]
+        computes = self.vehicle_pool_computes[self.active_vehicle_slots].reshape(client_count, 1)
+        labels = self.vehicle_pool_labels[self.active_vehicle_slots]
         return np.concatenate([channel_gains, computes, labels], axis=1).astype(np.float32)
 
     def calc_wireless_transmission_delay(self, cluster_choices, bw_weights, smashed_data_sizes_bytes, channel_gains):
@@ -113,15 +116,14 @@ class LiquidAIRANEnv:
             raise ValueError("cluster choices must reference currently available MIGs")
         if (bandwidths < 0.0).any() or (sizes < 0.0).any():
             raise ValueError("bandwidth weights and data sizes must be non-negative")
+        if bandwidths.sum() > 1.0 + 1e-6:
+            raise ValueError("bandwidth allocations must not exceed the global budget")
 
         cluster_delays = np.zeros(self.max_migs, dtype=np.float64)
         for mig_id in range(self.current_migs):
             members = clusters == mig_id
             if not members.any():
                 continue
-            weights = bandwidths[members]
-            weight_sum = weights.sum()
-            allocation = np.full(len(weights), 1.0 / len(weights)) if weight_sum <= 1e-12 else weights / weight_sum
-            rates_bps = allocation * (self.current_bandwidth / self.current_migs) * np.log2(1.0 + 10.0 * gains[members])
+            rates_bps = bandwidths[members] * self.current_bandwidth * np.log2(1.0 + 10.0 * gains[members])
             cluster_delays[mig_id] = np.max((sizes[members] * 8.0) / np.maximum(rates_bps, 1e-9))
         return cluster_delays

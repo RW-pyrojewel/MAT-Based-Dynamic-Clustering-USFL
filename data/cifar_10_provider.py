@@ -11,7 +11,7 @@ class CIFAR10NonIIDProvider:
     使用狄利克雷分布 Dirichlet(alpha) 对 CIFAR-10 进行划分，模拟设备间的数据异构。
     由于 CIFAR-10 包含 10 个类别，生成的标签分布向量 v_n 为 10 维。
     """
-    def __init__(self, num_clients=25, alpha=1.0, data_dir="./data"):
+    def __init__(self, num_clients=25, alpha=1.0, data_dir="../Data"):
         self.num_clients = num_clients
         self.alpha = alpha
         self.data_dir = data_dir

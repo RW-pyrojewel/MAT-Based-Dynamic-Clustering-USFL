@@ -15,6 +15,7 @@ class SyntheticCIFAR100Provider:
     num_classes = 100
 
     def __init__(self, num_clients, seed):
+        self.num_clients = num_clients
         rng = np.random.default_rng(seed)
         self.distributions = rng.dirichlet(np.full(self.num_classes, 0.1), size=num_clients)
 
