@@ -49,14 +49,28 @@ class MATAgent(BaseAgent):
         return l1_all, l2_all, total_log_prob, total_entropy
 
     @torch.no_grad()
-    def step(self, active_clients_state: np.ndarray, available_migs: int, edge_state: np.ndarray):
+    def act(self, active_clients_state: np.ndarray, available_migs: int, edge_state: np.ndarray, deterministic=False):
+        """Generate one joint action and its behavior-policy log probability."""
         state = torch.as_tensor(active_clients_state, dtype=torch.float32, device=self.device).unsqueeze(0)
         edge = torch.as_tensor(edge_state, dtype=torch.float32, device=self.device).reshape(1, -1)
         encoded = self.encoder(state, edge)
-        clusters, bandwidths, device_log_prob, _ = self.decoder.act(encoded, available_migs, deterministic=True)
-        l1, l2, cluster_log_prob, _ = self._cluster_actions(encoded, clusters, deterministic=True)
-        self.last_action_log_prob = (device_log_prob + cluster_log_prob).item()
-        return tuple(item.squeeze(0).cpu().numpy() for item in (clusters, l1, l2, bandwidths))
+        clusters, bandwidths, device_log_prob, _ = self.decoder.act(encoded, available_migs, deterministic=deterministic)
+        l1, l2, cluster_log_prob, _ = self._cluster_actions(encoded, clusters, deterministic=deterministic)
+        action = {
+            "cluster": clusters.squeeze(0).cpu().numpy(),
+            "l1": l1.squeeze(0).cpu().numpy(),
+            "l2": l2.squeeze(0).cpu().numpy(),
+            "bw": bandwidths.squeeze(0).cpu().numpy(),
+        }
+        log_prob = (device_log_prob + cluster_log_prob).item()
+        self.last_action_log_prob = log_prob
+        return action, log_prob
+
+    @torch.no_grad()
+    def step(self, active_clients_state: np.ndarray, available_migs: int, edge_state: np.ndarray):
+        """Deterministic evaluation action required by the BaseAgent interface."""
+        action, _ = self.act(active_clients_state, available_migs, edge_state, deterministic=True)
+        return action["cluster"], action["l1"], action["l2"], action["bw"]
 
     @torch.no_grad()
     def get_value(self, state, edge_state):

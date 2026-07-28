@@ -5,6 +5,7 @@ import time
 from envs.liquid_airan_env import LiquidAIRANEnv
 from models.usfl_networks import ResNet18_USFL
 from models.mat_agent import MATAgent
+from data import CIFAR100NonIIDProvider
 from utils.logger import SimulationLogger
 
 # --- 占位用的随机基线算法 ---
@@ -32,7 +33,7 @@ class RandomAgent(BaseAgent):
 def simulate_epoch(env, agent, resnet, epoch):
     """单轮仿真执行流"""
     # 1. 环境时序推进，获取本轮潮汐状态
-    client_states, available_migs, current_bandwidth = env.step()
+    client_states, available_migs, current_bandwidth, _ = env.step()
     N = client_states.shape[0]
 
     print(f"\n[Epoch {epoch}] 当前车辆数: {N}, 可用 MIGs: {available_migs}, 当前带宽: {current_bandwidth:.2f} Mbps")
@@ -40,7 +41,11 @@ def simulate_epoch(env, agent, resnet, epoch):
     # 2. 算法决策
     # 记录算法推理耗时 (可选，作为参考)
     t_start = time.time()
-    cluster_choices, l1_choices, l2_choices, bw_weights = agent.step(client_states, available_migs)
+    edge_state = np.asarray([available_migs, current_bandwidth], dtype=np.float32)
+    if isinstance(agent, MATAgent):
+        cluster_choices, l1_choices, l2_choices, bw_weights = agent.step(client_states, available_migs, edge_state)
+    else:
+        cluster_choices, l1_choices, l2_choices, bw_weights = agent.step(client_states, available_migs)
     # 对于 PyTorch 模型，如果返回值是 Tensor，转为 numpy
     if isinstance(cluster_choices, torch.Tensor):
         cluster_choices = cluster_choices.detach().cpu().numpy()
@@ -104,7 +109,7 @@ def simulate_epoch(env, agent, resnet, epoch):
             
         # 4. 环境计算无线木桶传输延迟
         # (我们将计算所有设备的延迟，但此处只需提取当前簇 k 的最大传输时间)
-        tx_delays_per_cluster = env.calc_wireless_transmission_delay(cluster_choices, bw_weights, smashed_data_sizes_bytes)
+        tx_delays_per_cluster = env.calc_wireless_transmission_delay(cluster_choices, bw_weights, smashed_data_sizes_bytes, client_states[:, 0])
         cluster_tx_delay = tx_delays_per_cluster[k]
         
         # 5. 计算当前簇的总时延 (通信木桶 + 计算耗时)
@@ -122,8 +127,9 @@ def main():
     print("🚀 开始启动 6G AI-RAN SFL 150 轮潮汐仿真...")
     
     # 1. 初始化模块
-    env = LiquidAIRANEnv()
-    resnet = ResNet18_USFL(num_classes=100)
+    data_provider = CIFAR100NonIIDProvider(num_clients=25, alpha=0.1)
+    env = LiquidAIRANEnv(data_provider)
+    resnet = ResNet18_USFL(num_classes=data_provider.num_classes)
     logger = SimulationLogger(log_dir="logs")
 
     # 获取 GPU 可用状态
@@ -131,8 +137,8 @@ def main():
     resnet.to(device)
     
     # 状态维度: h_n (1), f_n (1), v_n (100) = 102
-    state_dim = 102 
-    mat_agent = MATAgent(state_dim=state_dim, hidden_dim=128, num_migs=env.current_migs, device=device)
+    state_dim = 2 + data_provider.num_classes
+    mat_agent = MATAgent(state_dim=state_dim, hidden_dim=128, num_migs=env.max_migs, device=device)
     random_agent = RandomAgent()
     cpsl_agent = CPSLAgent()
     clustersfl_agent = ClusterSFLAgent()

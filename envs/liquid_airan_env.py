@@ -8,7 +8,7 @@ class LiquidAIRANEnv:
     - 仅专注控制 150 轮环境潮汐（动态参与、带宽拥塞）。
     - 仅负责香农定理下的无线信道传输延迟计算。
     """
-    def __init__(self, data_provider, max_vehicles=25, base_bandwidth=100e6):
+    def __init__(self, data_provider, max_vehicles=25, base_bandwidth=100e6, max_migs=5):
         """
         必须在初始化时传入实例化的 CIFAR10NonIIDProvider，以获取真实的 v_n
         """
@@ -16,6 +16,9 @@ class LiquidAIRANEnv:
         self.max_vehicles = max_vehicles
         self.num_classes = data_provider.num_classes # 必须为 10
         self.base_bandwidth = base_bandwidth
+        self.max_migs = max_migs
+        if self.max_migs < 5:
+            raise ValueError("max_migs must support the five-MIG tide phase")
         
         self.current_epoch = 0
         self.max_epochs = 150
@@ -109,7 +112,7 @@ class LiquidAIRANEnv:
         client_states = np.concatenate([h_n, f_n, v_n], axis=1)
         return client_states
         
-    def calc_wireless_transmission_delay(self, cluster_choices, bw_weights, smashed_data_sizes_bytes):
+    def calc_wireless_transmission_delay(self, cluster_choices, bw_weights, smashed_data_sizes_bytes, channel_gains):
         """
         根据动作和真实产生的张量大小，计算木桶传输时延。
         
@@ -122,15 +125,13 @@ class LiquidAIRANEnv:
         - max_tx_delay_per_cluster: (K,) 各 MIG 簇接收特征所需的最长传输时间 (木桶短板)
         """
         N = len(cluster_choices)
+        h_n = np.asarray(channel_gains, dtype=np.float64)
+        if h_n.shape != (N,) or not np.isfinite(h_n).all() or (h_n < 0.0).any():
+            raise ValueError("channel_gains must be a finite non-negative array of shape (N,)")
         tx_delays = np.zeros(N)
-        # 假设最大 MIG 数量不会超过 7
-        max_tx_delay_per_cluster = np.zeros(7) 
-        
-        # 提取各个设备的信道状态用于计算 SNR
-        # 此处简化为重生成，工程上应该直接从 state_parser 解析传入的 h_n，保持绝对时空一致性
-        h_n = np.random.rayleigh(scale=1.0, size=N)
-        
-        for k in range(7):
+        max_tx_delay_per_cluster = np.zeros(self.max_migs)
+
+        for k in range(self.max_migs):
             mask = (cluster_choices == k)
             if np.sum(mask) == 0:
                 continue
