@@ -33,15 +33,36 @@ def _next_batch(provider, iterators, client_id, batch_size):
     return batch
 
 
-def _act(agent, state, available_migs, edge_state, deterministic):
-    action, log_prob = agent.act(state, available_migs, edge_state, deterministic=deterministic)
+def _act(agent, state, available_migs, edge_state, deterministic, client_ids=None):
+    if isinstance(agent, MATAgent):
+        action, policy_info = agent.act(
+            state,
+            available_migs,
+            edge_state,
+            client_ids=client_ids,
+            deterministic=deterministic,
+        )
+    else:
+        action, policy_info = agent.act(state, available_migs, edge_state, deterministic=deterministic)
     if (action["cluster"] < 0).any() or (action["cluster"] >= available_migs).any():
         raise ValueError("agent produced a cluster outside the available MIG range")
     if not np.all(action["l1"] < action["l2"]):
         raise ValueError("agent produced an invalid USFL split pair")
     if action["bw"].sum() > 1.0 + 1e-6:
         raise ValueError("agent exceeded the global bandwidth budget")
-    return action, log_prob
+    return action, policy_info
+
+
+def _bandwidth_diagnostics(weights, minimum_share):
+    weights = np.asarray(weights, dtype=np.float64)
+    mean = float(weights.mean())
+    pairwise_difference = np.abs(weights[:, None] - weights[None, :]).mean()
+    gini = pairwise_difference / max(2.0 * mean, 1e-12)
+    return {
+        "bandwidth_gini": float(gini),
+        "bandwidth_cv": float(weights.std() / max(mean, 1e-12)),
+        "bandwidth_floor_hit_rate": float(np.mean(np.isclose(weights, minimum_share, atol=1e-4))),
+    }
 
 
 def _run_usfl_round(model, optimizer, provider, iterators, client_ids, action, device, local_steps):
@@ -152,18 +173,24 @@ def _fedavg(models, optimizers):
 
 def _flush_ppo(agent, buffer):
     if not len(buffer):
-        return
+        return {}
     kwargs = buffer.as_ppo_kwargs()
-    agent.update_policy(kwargs.pop("rewards"), kwargs.pop("next_states"), kwargs.pop("dones"), **kwargs)
+    diagnostics = agent.update_policy(
+        kwargs.pop("rewards"),
+        kwargs.pop("next_states"),
+        kwargs.pop("dones"),
+        **kwargs,
+    )
     buffer.clear()
+    return diagnostics
 
 
-def _build_agent(algorithm, state_dim, device, min_bandwidth_share):
+def _build_agent(algorithm, state_dim, device, min_bandwidth_share, nominal_bandwidth_hz=100e6):
     algorithm = algorithm.lower()
     if algorithm == "mat":
         return "MAT-RL", MATAgent(
             state_dim=state_dim, hidden_dim=128, num_migs=7, num_cut_layers=7,
-            min_bandwidth_share=min_bandwidth_share, device=device,
+            min_bandwidth_share=min_bandwidth_share, nominal_bandwidth_hz=nominal_bandwidth_hz, device=device,
         )
     if algorithm == "cpsl":
         return "Adapted-CPSL", CPSLAgent(fixed_clusters=2, fixed_l1=3, fixed_l2=4)
@@ -176,18 +203,26 @@ def _build_agent(algorithm, state_dim, device, min_bandwidth_share):
     raise ValueError("algorithm must be one of: mat, cpsl, clustersfl, pcsfl")
 
 
-def _append_transition(agent, buffer, previous, state, edge_state, done):
+def _append_transition(agent, buffer, previous, state, edge_state, done, station_id, epoch):
     if isinstance(agent, MATAgent):
         buffer.append(
-            previous["state"], previous["edge_state"], previous["action"], previous["reward"],
-            state, edge_state, done, previous["log_prob"], previous["available_migs"],
+            previous["state"],
+            previous["edge_state"],
+            previous["action"],
+            previous["reward"],
+            state,
+            edge_state,
+            done,
+            previous["policy_info"],
+            previous["available_migs"],
+            station_id,
+            previous["epoch"],
         )
     elif isinstance(agent, PCSFLAgent):
         agent.observe(
             previous["state"], previous["edge_state"], previous["action"], previous["reward"],
             state, edge_state, done,
         )
-
 
 def run_scenario_a(
     algorithm="mat",
@@ -241,8 +276,11 @@ def run_scenario_a(
     }
     _warm_up_models(models, execution_device, batch_size)
     iterators = {station_id: {"batch_size": batch_size} for station_id in calculators}
-    algorithm_name, agent = _build_agent(algorithm, 2 + provider.num_classes, execution_device, min_bandwidth_share)
-    reward_config = MATRewardConfig(cluster_size_limit=10)
+    algorithm_name, agent = _build_agent(
+        algorithm, 2 + provider.num_classes, execution_device, min_bandwidth_share,
+        nominal_bandwidth_hz=calculators[1].base_bandwidth,
+    )
+    reward_config = MATRewardConfig()
     buffer = MATTrajectoryBuffer()
     pending = {}
     logger = SimulationLogger(log_dir=log_dir, run_name=run_name or f"scenario_a_{algorithm}_seed_{seed}")
@@ -251,6 +289,13 @@ def run_scenario_a(
         total_epochs=total_epochs, batch_size=batch_size, local_steps=local_steps, warmup_epochs=warmup_epochs,
         client_gradient_normalization=True, optimizer_momentum_reset_on_fedavg=True,
         min_bandwidth_share=min_bandwidth_share, baseline_bandwidth_policy="equal-global-share",
+        mat_decision_order="random-rollout/stable-client-id-deterministic",
+        edge_state_normalization=(
+            f"available_migs/7, bandwidth_hz/{calculators[1].base_bandwidth:g}"
+        ),
+        reward_delay_weight=reward_config.delay_weight,
+        reward_delay_reference_seconds=reward_config.delay_reference_seconds,
+        reward_cluster_capacity_enabled=reward_config.cluster_size_limit is not None,
         fedavg_interval=fedavg_interval, seed=seed, device=str(execution_device), trace_id=trace.trace_id,
     )
 
@@ -261,9 +306,11 @@ def run_scenario_a(
             edge_state = np.asarray([available_migs, bandwidth], dtype=np.float32)
             previous = pending.pop(station_id, None)
             if previous is not None:
-                _append_transition(agent, buffer, previous, state, edge_state, False)
+                _append_transition(agent, buffer, previous, state, edge_state, False, station_id, epoch)
 
-            action, log_prob = _act(agent, state, available_migs, edge_state, deterministic=False)
+            action, policy_info = _act(
+                agent, state, available_migs, edge_state, deterministic=False, client_ids=client_ids
+            )
             training = _run_usfl_round(
                 models[station_id], optimizers[station_id], provider, iterators[station_id], client_ids,
                 action, execution_device, local_steps,
@@ -284,7 +331,7 @@ def run_scenario_a(
             if updates_online:
                 pending[station_id] = {
                     "state": state, "edge_state": edge_state, "action": action, "reward": reward,
-                    "log_prob": log_prob, "available_migs": available_migs,
+                    "policy_info": policy_info, "available_migs": available_migs, "epoch": epoch,
                 }
             logger.log_metrics(
                 algorithm_name,
@@ -294,6 +341,7 @@ def run_scenario_a(
                 virtual_cluster_count=int(len(np.unique(action.get("virtual_cluster", action["cluster"])))),
                 bandwidth_allocation_sum=float(action["bw"].sum()), bandwidth_unused=float(1.0 - action["bw"].sum()),
                 min_bandwidth_share=float(action["bw"].min()), max_bandwidth_share=float(action["bw"].max()),
+                **_bandwidth_diagnostics(action["bw"], min_bandwidth_share),
                 mean_l1=float(action["l1"].mean()), mean_l2=float(action["l2"].mean()),
                 smashed_data_bytes_total=float(training["smashed_sizes"].sum()),
                 smashed_data_bytes_per_client_mean=float(training["smashed_sizes"].mean()),
@@ -308,12 +356,26 @@ def run_scenario_a(
             for row in logger.records[algorithm_name][-3:]:
                 row["test_accuracy"] = test_accuracy
         if algorithm == "mat" and not is_warmup and len(buffer) >= ppo_update_interval:
-            _flush_ppo(agent, buffer)
+            diagnostics = _flush_ppo(agent, buffer)
+            for row in logger.records[algorithm_name][-3:]:
+                row.update({f"ppo_{key}": value for key, value in diagnostics.items()})
 
-    for terminal in pending.values():
-        _append_transition(agent, buffer, terminal, terminal["state"], terminal["edge_state"], True)
+    for station_id, terminal in pending.items():
+        _append_transition(
+            agent,
+            buffer,
+            terminal,
+            terminal["state"],
+            terminal["edge_state"],
+            True,
+            station_id,
+            total_epochs,
+        )
     if algorithm == "mat":
-        _flush_ppo(agent, buffer)
+        diagnostics = _flush_ppo(agent, buffer)
+        if diagnostics:
+            for row in logger.records[algorithm_name][-3:]:
+                row.update({f"ppo_{key}": value for key, value in diagnostics.items()})
     csv_paths = logger.export_to_csv()
     json_path = logger.export_to_json()
     plot_paths = logger.plot_scenario_a(algorithm_name, warmup_epochs=warmup_epochs) if create_plots else []

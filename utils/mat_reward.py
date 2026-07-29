@@ -1,35 +1,34 @@
-"""Scheme-aligned reward calculation for MAT resource allocation."""
+﻿"""Dimensionless reward calculation for MAT resource allocation."""
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
 
 @dataclass(frozen=True)
 class MATRewardConfig:
-    """Explicit coefficients for the reward in research-plan section 4.1.3."""
+    """Coefficients and physical references for the scheme-defined reward."""
 
     delay_weight: float = 0.5
+    delay_reference_seconds: float = 1.0
     bandwidth_penalty_weight: float = 1.0
-    cluster_size_penalty_weight: float = 1.0
-    cluster_size_limit: int = 8
+    cluster_size_penalty_weight: float = 0.0
+    cluster_size_limit: int | None = None
     epsilon: float = 1e-12
 
     def __post_init__(self):
         if not 0.0 <= self.delay_weight <= 1.0:
             raise ValueError("delay_weight must be in [0, 1]")
-        if self.cluster_size_limit < 1:
-            raise ValueError("cluster_size_limit must be positive")
+        if self.delay_reference_seconds <= 0.0:
+            raise ValueError("delay_reference_seconds must be positive")
+        if self.cluster_size_limit is not None and self.cluster_size_limit < 1:
+            raise ValueError("cluster_size_limit must be positive when enabled")
         if min(self.bandwidth_penalty_weight, self.cluster_size_penalty_weight, self.epsilon) < 0.0:
             raise ValueError("penalty weights and epsilon must be non-negative")
 
 
 def compute_mat_reward(system_max_delay, label_distributions, cluster_choices, bandwidths, config, ideal_distribution=None):
-    """Compute ``-[lambda*T + (1-lambda)*Gamma] - Upsilon``.
-
-    ``Gamma`` is the sum of KL(cluster label distribution || ideal label
-    distribution) over non-empty clusters. ``Upsilon`` applies the plan's
-    ReLU penalties to the global bandwidth request and cluster sizes.
-    """
+    """Compute the normalized delay/Non-IID objective and physical penalties."""
     labels = np.asarray(label_distributions, dtype=np.float64)
     clusters = np.asarray(cluster_choices)
     bandwidths = np.asarray(bandwidths, dtype=np.float64)
@@ -53,8 +52,10 @@ def compute_mat_reward(system_max_delay, label_distributions, cluster_choices, b
     ideal = np.clip(ideal, config.epsilon, None)
     ideal = ideal / ideal.sum()
 
+    cluster_ids = np.unique(clusters)
+    cluster_sizes = np.asarray([np.sum(clusters == cluster_id) for cluster_id in cluster_ids], dtype=np.float64)
     kl_sum = 0.0
-    for cluster_id in np.unique(clusters):
+    for cluster_id in cluster_ids:
         members = labels[clusters == cluster_id]
         cluster_distribution = members.mean(axis=0)
         if cluster_distribution.sum() <= 0.0:
@@ -63,8 +64,33 @@ def compute_mat_reward(system_max_delay, label_distributions, cluster_choices, b
         positive = cluster_distribution > 0.0
         kl_sum += float(np.sum(cluster_distribution[positive] * np.log(cluster_distribution[positive] / ideal[positive])))
 
+    delay_normalized = float(system_max_delay) / config.delay_reference_seconds
+    kl_reference = max(len(cluster_ids) * math.log(class_count), config.epsilon)
+    kl_normalized = kl_sum / kl_reference
     bandwidth_violation = max(float(bandwidths.sum()) - 1.0, 0.0)
-    cluster_size_violation = sum(max(int(np.sum(clusters == cluster_id)) - config.cluster_size_limit, 0) for cluster_id in np.unique(clusters))
-    penalty = (config.bandwidth_penalty_weight * bandwidth_violation + config.cluster_size_penalty_weight * cluster_size_violation)
-    objective = config.delay_weight * float(system_max_delay) + (1.0 - config.delay_weight) * kl_sum
-    return -(objective + penalty), {"delay": float(system_max_delay), "kl_sum": kl_sum, "bandwidth_violation": bandwidth_violation, "cluster_size_violation": float(cluster_size_violation), "penalty": penalty}
+    if config.cluster_size_limit is None:
+        cluster_size_violation = 0.0
+    else:
+        excess = np.maximum(cluster_sizes - config.cluster_size_limit, 0.0).sum()
+        cluster_size_violation = float(excess / labels.shape[0])
+    penalty = (
+        config.bandwidth_penalty_weight * bandwidth_violation
+        + config.cluster_size_penalty_weight * cluster_size_violation
+    )
+    objective = config.delay_weight * delay_normalized + (1.0 - config.delay_weight) * kl_normalized
+    mean_cluster_size = float(cluster_sizes.mean())
+    cluster_size_std = float(cluster_sizes.std())
+    cluster_load_cv = cluster_size_std / max(mean_cluster_size, config.epsilon)
+    return -(objective + penalty), {
+        "delay": float(system_max_delay),
+        "delay_normalized": delay_normalized,
+        "kl_sum": kl_sum,
+        "kl_normalized": kl_normalized,
+        "nonempty_cluster_count": int(len(cluster_ids)),
+        "max_cluster_size": int(cluster_sizes.max()),
+        "cluster_size_std": cluster_size_std,
+        "cluster_load_cv": cluster_load_cv,
+        "bandwidth_violation": bandwidth_violation,
+        "cluster_size_violation": cluster_size_violation,
+        "penalty": penalty,
+    }

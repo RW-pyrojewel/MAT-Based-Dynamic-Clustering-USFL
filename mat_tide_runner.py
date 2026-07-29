@@ -1,4 +1,4 @@
-﻿"""Minimal MAT online-interaction smoke test for the 2->5->2 MIG tide."""
+"""Minimal MAT online-interaction smoke test for the 2->5->2 MIG tide."""
 import json
 
 import numpy as np
@@ -36,7 +36,7 @@ def run_tide_validation(rounds_per_phase=4, client_count=10, seed=7):
     provider = SyntheticCIFAR100Provider(client_count, seed)
     env = LiquidAIRANEnv(provider, max_vehicles=client_count, max_migs=7)
     agent = MATAgent(state_dim=2 + provider.num_classes, hidden_dim=32, num_migs=env.max_migs, num_cut_layers=7)
-    reward_config = MATRewardConfig(cluster_size_limit=client_count)
+    reward_config = MATRewardConfig()
     buffer = MATTrajectoryBuffer()
     reports = []
     phases = (("baseline", 2, 1.0), ("compute_windfall", 5, 1.0), ("recovery_congestion", 2, 0.2))
@@ -48,7 +48,7 @@ def run_tide_validation(rounds_per_phase=4, client_count=10, seed=7):
         for round_index in range(rounds_per_phase):
             state = build_state(rng, provider, client_count)
             edge_state = np.asarray([available_migs, env.current_bandwidth], dtype=np.float32)
-            action, old_log_prob = agent.act(state, available_migs, edge_state, deterministic=False)
+            action, policy_info = agent.act(state, available_migs, edge_state, deterministic=False)
             assert np.all((action["cluster"] >= 0) & (action["cluster"] < available_migs))
             assert np.all(action["l1"] < action["l2"])
             tx_delays = env.calc_wireless_transmission_delay(action["cluster"], action["bw"], np.full(client_count, 4096.0), state[:, 0])
@@ -56,7 +56,11 @@ def run_tide_validation(rounds_per_phase=4, client_count=10, seed=7):
             next_state = build_state(rng, provider, client_count)
             next_edge_state = np.asarray([available_migs, env.current_bandwidth], dtype=np.float32)
             done = phase_index == len(phases) - 1 and round_index == rounds_per_phase - 1
-            buffer.append(state, edge_state, action, reward, next_state, next_edge_state, done, old_log_prob, available_migs)
+            epoch = phase_index * rounds_per_phase + round_index + 1
+            buffer.append(
+                state, edge_state, action, reward, next_state, next_edge_state, done,
+                policy_info, available_migs, station_id=1, epoch=epoch,
+            )
             phase_rewards.append(reward)
         kwargs = buffer.as_ppo_kwargs()
         agent.update_policy(kwargs.pop("rewards"), kwargs.pop("next_states"), kwargs.pop("dones"), **kwargs)

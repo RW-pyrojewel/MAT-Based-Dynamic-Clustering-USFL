@@ -1,4 +1,6 @@
-"""Neural building blocks for the multi-agent Transformer policy."""
+"""Neural building blocks for the hierarchical multi-agent Transformer policy."""
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as functional
@@ -6,14 +8,14 @@ from torch.distributions import Categorical, Normal
 
 
 class HeterogeneousEncoder(nn.Module):
-    """Encode client tokens and the scheme-defined global edge token."""
+    """Encode client tokens together with the normalized edge-resource token."""
 
     def __init__(self, state_dim, hidden_dim, edge_state_dim=2, num_heads=4, num_layers=2):
         super().__init__()
         self.state_embed = nn.Linear(state_dim, hidden_dim)
         self.edge_embed = nn.Linear(edge_state_dim, hidden_dim)
         layer = nn.TransformerEncoderLayer(
-            hidden_dim, num_heads, hidden_dim * 4, batch_first=True, activation="gelu", norm_first=True
+            hidden_dim, num_heads, hidden_dim * 4, batch_first=True, activation="gelu", norm_first=True, dropout=0.0
         )
         self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
 
@@ -29,124 +31,231 @@ class HeterogeneousEncoder(nn.Module):
         return self.transformer(tokens, src_key_padding_mask=padding_mask)[:, 1:]
 
 
-class AutoregressiveDecoder(nn.Module):
-    """Autoregressive policy with minimum-share global bandwidth allocations."""
+class CausalDeviceDecoder(nn.Module):
+    """Generate per-device MIG and bandwidth actions from a causal action prefix."""
 
     _EPS = 1e-6
 
-    def __init__(self, hidden_dim, num_migs, num_cut_layers=None, num_heads=4, min_bandwidth_share=0.01):
+    def __init__(self, hidden_dim, num_migs, num_heads=4, num_layers=2, min_bandwidth_share=0.01, initial_bandwidth_log_std=-1.5):
         super().__init__()
         if not 0.0 <= min_bandwidth_share < 1.0:
             raise ValueError("min_bandwidth_share must be in [0, 1)")
-        self.num_migs = num_migs
+        self.hidden_dim = int(hidden_dim)
+        self.num_migs = int(num_migs)
         self.min_bandwidth_share = float(min_bandwidth_share)
-        self.context_embed = nn.Linear(num_migs * 2, hidden_dim)
-        self.attention = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
-        self.fusion_norm = nn.LayerNorm(hidden_dim)
+        self.start_token = nn.Parameter(torch.zeros(hidden_dim))
+        self.cluster_embedding = nn.Embedding(num_migs, hidden_dim)
+        self.bandwidth_embedding = nn.Linear(1, hidden_dim)
+        layer = nn.TransformerDecoderLayer(
+            hidden_dim, num_heads, hidden_dim * 4, batch_first=True, activation="gelu", norm_first=True, dropout=0.0
+        )
+        self.transformer = nn.TransformerDecoder(layer, num_layers=num_layers)
+        self.output_norm = nn.LayerNorm(hidden_dim)
         self.cluster_head = nn.Linear(hidden_dim, num_migs)
         self.bandwidth_mean_head = nn.Linear(hidden_dim, 1)
-        self.bandwidth_log_std = nn.Parameter(torch.tensor(-0.5))
+        nn.init.zeros_(self.bandwidth_mean_head.weight)
+        nn.init.zeros_(self.bandwidth_mean_head.bias)
+        self.bandwidth_log_std = nn.Parameter(torch.tensor(float(initial_bandwidth_log_std)))
 
-    def _fuse(self, token, history):
-        context = functional.gelu(self.context_embed(history)).unsqueeze(1)
-        attended, _ = self.attention(token, context, context, need_weights=False)
-        return self.fusion_norm((token + attended).squeeze(1))
+    @staticmethod
+    def _causal_mask(length, device):
+        return torch.triu(torch.ones((length, length), dtype=torch.bool, device=device), diagonal=1)
+
+    def _prefix_inputs(self, ordered_states, clusters=None, bandwidths=None):
+        batch_size, client_count, _ = ordered_states.shape
+        shifted_actions = ordered_states.new_zeros((batch_size, client_count, self.hidden_dim))
+        shifted_actions[:, 0] = self.start_token
+        if client_count > 1 and clusters is not None and bandwidths is not None:
+            action_tokens = self.cluster_embedding(clusters[:, :-1].long())
+            action_tokens = action_tokens + self.bandwidth_embedding(bandwidths[:, :-1].unsqueeze(-1))
+            shifted_actions[:, 1:] = action_tokens
+        return ordered_states + shifted_actions
+
+    def _decode_prefix(self, ordered_states, clusters=None, bandwidths=None):
+        target = self._prefix_inputs(ordered_states, clusters, bandwidths)
+        decoded = self.transformer(target, ordered_states, tgt_mask=self._causal_mask(target.shape[1], target.device))
+        return self.output_norm(decoded)
 
     def _cluster_dist(self, features, available_migs):
-        if not 1 <= available_migs <= self.num_migs:
+        if not 1 <= int(available_migs) <= self.num_migs:
             raise ValueError("available_migs must be in [1, num_migs]")
         logits = self.cluster_head(features)
-        logits[:, available_migs:] = -torch.inf
-        return Categorical(logits=logits)
+        valid = torch.arange(self.num_migs, device=features.device) < int(available_migs)
+        return Categorical(logits=logits.masked_fill(~valid, -torch.inf))
 
     def _bandwidth_dist(self, features):
-        return Normal(
-            self.bandwidth_mean_head(features).squeeze(-1),
-            self.bandwidth_log_std.exp().clamp(1e-3, 2.0),
-        )
+        return Normal(self.bandwidth_mean_head(features).squeeze(-1), self.bandwidth_log_std.exp().clamp(1e-3, 1.0))
 
-    @classmethod
-    def _remaining_bandwidth(cls, history):
-        return (1.0 - history[:, 1::2].sum(dim=1)).clamp_min(0.0)
-
-    def _allocation_interval(self, history, clients_remaining_after_current):
-        remaining = self._remaining_bandwidth(history)
+    def _allocation_parameters(self, remaining, remaining_clients):
+        center = remaining / float(remaining_clients)
         lower = remaining.new_full(remaining.shape, self.min_bandwidth_share)
-        upper = remaining - clients_remaining_after_current * self.min_bandwidth_share
+        upper = remaining - float(remaining_clients - 1) * self.min_bandwidth_share
         if torch.any(upper < lower - self._EPS):
             raise ValueError("minimum bandwidth share is infeasible for this client count")
-        return lower, (upper - lower).clamp_min(0.0), remaining
+        half_width = torch.minimum(center - lower, upper - center).clamp_min(0.0)
+        return center, half_width
 
     @classmethod
-    def _bounded_log_prob(cls, distribution, allocation, lower, width):
-        fraction = ((allocation - lower) / width).clamp(cls._EPS, 1.0 - cls._EPS)
-        return distribution.log_prob(torch.logit(fraction)) - torch.log(width * fraction * (1.0 - fraction))
+    def _transform_bandwidth(cls, latent, center, half_width):
+        return center + half_width * torch.tanh(latent)
 
-    def _update_history(self, history, choices, allocation):
-        updated = history.clone()
-        batch = torch.arange(history.size(0), device=history.device)
-        updated[batch, choices * 2] += 1.0
-        updated[batch, choices * 2 + 1] += allocation
-        return updated
+    @classmethod
+    def _bandwidth_log_prob(cls, distribution, allocation, center, half_width):
+        if torch.all(half_width <= cls._EPS):
+            return allocation.new_zeros(allocation.shape)
+        normalized = ((allocation - center) / half_width.clamp_min(cls._EPS)).clamp(-1.0 + cls._EPS, 1.0 - cls._EPS)
+        latent = torch.atanh(normalized)
+        jacobian = half_width.clamp_min(cls._EPS) * (1.0 - normalized.square()).clamp_min(cls._EPS)
+        return distribution.log_prob(latent) - torch.log(jacobian)
 
-    def act(self, encoded_states, available_migs, deterministic=False):
-        _, client_count, _ = encoded_states.shape
+    def act(self, ordered_states, available_migs, deterministic=False):
+        batch_size, client_count, _ = ordered_states.shape
         if client_count * self.min_bandwidth_share >= 1.0:
             raise ValueError("minimum bandwidth share is infeasible for the active client count")
-        history = encoded_states.new_zeros(encoded_states.size(0), self.num_migs * 2)
-        choices, allocations, log_probs, entropies = [], [], [], []
+        clusters = torch.zeros((batch_size, client_count), dtype=torch.long, device=ordered_states.device)
+        bandwidths = ordered_states.new_zeros((batch_size, client_count))
+        cluster_log_probs = ordered_states.new_zeros((batch_size, client_count))
+        bandwidth_log_probs = ordered_states.new_zeros((batch_size, client_count))
+        entropies = ordered_states.new_zeros((batch_size, client_count))
+        remaining = ordered_states.new_ones(batch_size)
         for index in range(client_count):
-            features = self._fuse(encoded_states[:, index:index + 1], history)
+            decoded = self._decode_prefix(ordered_states, clusters, bandwidths)
+            features = decoded[:, index]
             cluster_dist = self._cluster_dist(features, available_migs)
-            choice = cluster_dist.probs.argmax(-1) if deterministic else cluster_dist.sample()
-            remaining_after_current = client_count - index - 1
-            lower, width, remaining = self._allocation_interval(history, remaining_after_current)
-            if remaining_after_current == 0:
-                allocation = remaining
-                bandwidth_log_prob = allocation.new_zeros(allocation.shape)
-                bandwidth_entropy = allocation.new_zeros(allocation.shape)
+            cluster = cluster_dist.probs.argmax(-1) if deterministic else cluster_dist.sample()
+            remaining_clients = client_count - index
+            if remaining_clients == 1:
+                bandwidth = remaining
+                bandwidth_log_prob = remaining.new_zeros(remaining.shape)
+                bandwidth_entropy = remaining.new_zeros(remaining.shape)
             else:
+                center, half_width = self._allocation_parameters(remaining, remaining_clients)
                 bandwidth_dist = self._bandwidth_dist(features)
                 latent = bandwidth_dist.mean if deterministic else bandwidth_dist.rsample()
-                allocation = lower + width * torch.sigmoid(latent)
-                bandwidth_log_prob = self._bounded_log_prob(bandwidth_dist, allocation, lower, width)
-                bandwidth_entropy = bandwidth_dist.entropy()
-            log_probs.append(cluster_dist.log_prob(choice) + bandwidth_log_prob)
-            entropies.append(cluster_dist.entropy() + bandwidth_entropy)
-            history = self._update_history(history, choice, allocation)
-            choices.append(choice)
-            allocations.append(allocation)
-        return (
-            torch.stack(choices, 1),
-            torch.stack(allocations, 1),
-            torch.stack(log_probs, 1).sum(1),
-            torch.stack(entropies, 1).sum(1),
-        )
+                bandwidth = self._transform_bandwidth(latent, center, half_width)
+                bandwidth_log_prob = self._bandwidth_log_prob(bandwidth_dist, bandwidth, center, half_width)
+                bandwidth_entropy = -bandwidth_log_prob
+            clusters[:, index] = cluster
+            bandwidths[:, index] = bandwidth
+            cluster_log_probs[:, index] = cluster_dist.log_prob(cluster)
+            bandwidth_log_probs[:, index] = bandwidth_log_prob
+            entropies[:, index] = cluster_dist.entropy() + bandwidth_entropy
+            remaining = (remaining - bandwidth).clamp_min(0.0)
+        return clusters, bandwidths, cluster_log_probs, bandwidth_log_probs, entropies
 
-    def evaluate_actions(self, encoded_states, cluster_choices, bandwidths, available_migs):
-        _, client_count, _ = encoded_states.shape
-        if client_count * self.min_bandwidth_share >= 1.0:
-            raise ValueError("minimum bandwidth share is infeasible for the active client count")
-        history = encoded_states.new_zeros(encoded_states.size(0), self.num_migs * 2)
-        log_probs, entropies = [], []
+    def evaluate_actions(self, ordered_states, clusters, bandwidths, available_migs):
+        batch_size, client_count, _ = ordered_states.shape
+        if clusters.shape != (batch_size, client_count) or bandwidths.shape != (batch_size, client_count):
+            raise ValueError("clusters and bandwidths must match ordered_states")
+        decoded = self._decode_prefix(ordered_states, clusters, bandwidths)
+        cluster_log_probs = ordered_states.new_zeros((batch_size, client_count))
+        bandwidth_log_probs = ordered_states.new_zeros((batch_size, client_count))
+        entropies = ordered_states.new_zeros((batch_size, client_count))
+        remaining = ordered_states.new_ones(batch_size)
         for index in range(client_count):
-            features = self._fuse(encoded_states[:, index:index + 1], history)
+            features = decoded[:, index]
             cluster_dist = self._cluster_dist(features, available_migs)
-            choice, allocation = cluster_choices[:, index].long(), bandwidths[:, index]
-            remaining_after_current = client_count - index - 1
-            lower, width, remaining = self._allocation_interval(history, remaining_after_current)
-            if remaining_after_current == 0:
-                if torch.any((allocation - remaining).abs() > 1e-4):
+            cluster = clusters[:, index].long()
+            bandwidth = bandwidths[:, index]
+            remaining_clients = client_count - index
+            if remaining_clients == 1:
+                if torch.any((bandwidth - remaining).abs() > 1e-4):
                     raise ValueError("the final client must receive all remaining bandwidth")
-                bandwidth_log_prob = allocation.new_zeros(allocation.shape)
-                bandwidth_entropy = allocation.new_zeros(allocation.shape)
+                bandwidth_log_prob = remaining.new_zeros(remaining.shape)
+                bandwidth_entropy = remaining.new_zeros(remaining.shape)
             else:
-                if torch.any(allocation <= lower) or torch.any(allocation >= lower + width):
-                    raise ValueError("bandwidth allocation is outside its feasible autoregressive interval")
+                center, half_width = self._allocation_parameters(remaining, remaining_clients)
+                lower, upper = center - half_width, center + half_width
+                if torch.any(bandwidth < lower - 1e-5) or torch.any(bandwidth > upper + 1e-5):
+                    raise ValueError("bandwidth allocation is outside its feasible interval")
                 bandwidth_dist = self._bandwidth_dist(features)
-                bandwidth_log_prob = self._bounded_log_prob(bandwidth_dist, allocation, lower, width)
-                bandwidth_entropy = bandwidth_dist.entropy()
-            log_probs.append(cluster_dist.log_prob(choice) + bandwidth_log_prob)
-            entropies.append(cluster_dist.entropy() + bandwidth_entropy)
-            history = self._update_history(history, choice, allocation)
-        return torch.stack(log_probs, 1).sum(1), torch.stack(entropies, 1).sum(1)
+                bandwidth_log_prob = self._bandwidth_log_prob(bandwidth_dist, bandwidth, center, half_width)
+                bandwidth_entropy = -bandwidth_log_prob
+            cluster_log_probs[:, index] = cluster_dist.log_prob(cluster)
+            bandwidth_log_probs[:, index] = bandwidth_log_prob
+            entropies[:, index] = cluster_dist.entropy() + bandwidth_entropy
+            remaining = (remaining - bandwidth).clamp_min(0.0)
+        return cluster_log_probs, bandwidth_log_probs, entropies
+
+
+class ClusterSplitHead(nn.Module):
+    """Choose one shared U-shaped split pair for each non-empty cluster."""
+
+    def __init__(self, hidden_dim, num_migs, num_cut_layers, num_heads=4):
+        super().__init__()
+        if num_cut_layers < 2:
+            raise ValueError("num_cut_layers must be at least two")
+        self.num_migs = int(num_migs)
+        self.num_cut_layers = int(num_cut_layers)
+        self.cluster_tokens = nn.Parameter(torch.empty(num_migs, hidden_dim))
+        nn.init.normal_(self.cluster_tokens, std=1.0 / math.sqrt(hidden_dim))
+        self.resource_embed = nn.Linear(2, hidden_dim)
+        self.attention = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
+        self.output_norm = nn.LayerNorm(hidden_dim)
+        self.l1_head = nn.Linear(hidden_dim, num_cut_layers - 1)
+        self.l2_head = nn.Linear(hidden_dim, num_cut_layers)
+
+    def _cluster_context(self, encoded_states, clusters, bandwidths, mig_id):
+        members = clusters.eq(mig_id)
+        member_count = members.sum(dim=1)
+        present = member_count > 0
+        query = self.cluster_tokens[mig_id].reshape(1, 1, -1).expand(encoded_states.shape[0], -1, -1)
+        total_bandwidth = (bandwidths * members.float()).sum(dim=1)
+        resources = torch.stack((member_count.float() / float(encoded_states.shape[1]), total_bandwidth), dim=1)
+        query = query + self.resource_embed(resources).unsqueeze(1)
+        safe_members = members.clone()
+        safe_members[~present, 0] = True
+        context, _ = self.attention(query, encoded_states, encoded_states, key_padding_mask=~safe_members, need_weights=False)
+        return self.output_norm(context.squeeze(1)), present
+
+    def act(self, encoded_states, clusters, bandwidths, deterministic=False):
+        batch_size, client_count, _ = encoded_states.shape
+        l1_all = torch.zeros((batch_size, client_count), dtype=torch.long, device=encoded_states.device)
+        l2_all = torch.ones((batch_size, client_count), dtype=torch.long, device=encoded_states.device)
+        split_log_probs = encoded_states.new_zeros((batch_size, self.num_migs))
+        split_entropies = encoded_states.new_zeros((batch_size, self.num_migs))
+        split_mask = torch.zeros((batch_size, self.num_migs), dtype=torch.bool, device=encoded_states.device)
+        for mig_id in range(self.num_migs):
+            context, present = self._cluster_context(encoded_states, clusters, bandwidths, mig_id)
+            if not present.any():
+                continue
+            l1_dist = Categorical(logits=self.l1_head(context))
+            l1 = l1_dist.probs.argmax(-1) if deterministic else l1_dist.sample()
+            valid_l2 = torch.arange(self.num_cut_layers, device=encoded_states.device).unsqueeze(0) > l1.unsqueeze(1)
+            l2_dist = Categorical(logits=self.l2_head(context).masked_fill(~valid_l2, -torch.inf))
+            l2 = l2_dist.probs.argmax(-1) if deterministic else l2_dist.sample()
+            members = clusters.eq(mig_id)
+            l1_all = torch.where(members, l1.unsqueeze(1), l1_all)
+            l2_all = torch.where(members, l2.unsqueeze(1), l2_all)
+            split_log_probs[:, mig_id] = l1_dist.log_prob(l1) + l2_dist.log_prob(l2)
+            split_entropies[:, mig_id] = l1_dist.entropy() + l2_dist.entropy()
+            split_mask[:, mig_id] = present
+        return l1_all, l2_all, split_log_probs, split_entropies, split_mask
+
+    def evaluate_actions(self, encoded_states, clusters, bandwidths, l1, l2):
+        batch_size = encoded_states.shape[0]
+        split_log_probs = encoded_states.new_zeros((batch_size, self.num_migs))
+        split_entropies = encoded_states.new_zeros((batch_size, self.num_migs))
+        split_mask = torch.zeros((batch_size, self.num_migs), dtype=torch.bool, device=encoded_states.device)
+        for mig_id in range(self.num_migs):
+            members = clusters.eq(mig_id)
+            present = members.any(dim=1)
+            if not present.any():
+                continue
+            context, _ = self._cluster_context(encoded_states, clusters, bandwidths, mig_id)
+            selected_l1 = torch.where(members, l1, torch.zeros_like(l1)).max(dim=1).values
+            selected_l2 = torch.where(members, l2, torch.zeros_like(l2)).max(dim=1).values
+            if torch.any(torch.where(members, l1, selected_l1.unsqueeze(1)) != selected_l1.unsqueeze(1)):
+                raise ValueError("all clients in a cluster must share l1")
+            if torch.any(torch.where(members, l2, selected_l2.unsqueeze(1)) != selected_l2.unsqueeze(1)):
+                raise ValueError("all clients in a cluster must share l2")
+            l1_dist = Categorical(logits=self.l1_head(context))
+            valid_l2 = torch.arange(self.num_cut_layers, device=encoded_states.device).unsqueeze(0) > selected_l1.unsqueeze(1)
+            l2_dist = Categorical(logits=self.l2_head(context).masked_fill(~valid_l2, -torch.inf))
+            split_log_probs[:, mig_id] = l1_dist.log_prob(selected_l1) + l2_dist.log_prob(selected_l2)
+            split_entropies[:, mig_id] = l1_dist.entropy() + l2_dist.entropy()
+            split_mask[:, mig_id] = present
+        return split_log_probs, split_entropies, split_mask
+
+
+AutoregressiveDecoder = CausalDeviceDecoder
