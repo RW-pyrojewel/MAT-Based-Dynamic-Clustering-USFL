@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from scenario_a_runner import run_mat_scenario_a
+from scenario_a_runner import run_scenario_a
 
 
 METRICS = (
@@ -51,9 +51,9 @@ def _confidence_interval(values):
     return float(1.96 * values.std(ddof=1) / np.sqrt(len(values)))
 
 
-def _summarize(seed_loggers, seeds):
+def _summarize(seed_loggers, seeds, algorithm_name):
     per_seed = {
-        seed: _seed_epoch_records(logger.records["MAT-RL"])
+        seed: _seed_epoch_records(logger.records[algorithm_name])
         for seed, logger in zip(seeds, seed_loggers)
     }
     epochs = sorted(set.intersection(*(set(records) for records in per_seed.values())))
@@ -118,17 +118,20 @@ def _plot_summary(summary, output_dir, run_name):
     return str(path)
 
 
-def run_multiseed_scenario_a(seeds, log_dir="logs/multiseed", run_name="scenario_a_mat_multiseed", **kwargs):
+def run_multiseed_scenario_a(seeds, algorithm="mat", log_dir="logs/multiseed", run_name=None, **kwargs):
     """Run Scenario A serially for every seed and save raw and aggregate results."""
     seeds = tuple(int(seed) for seed in seeds)
     if len(seeds) < 2 or len(set(seeds)) != len(seeds):
         raise ValueError("provide at least two distinct random seeds")
+    algorithm = algorithm.lower()
+    run_name = run_name or f"scenario_a_{algorithm}_multiseed"
     output_dir = Path(log_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     loggers = []
     raw_results = []
     for seed in seeds:
-        result = run_mat_scenario_a(
+        result = run_scenario_a(
+            algorithm=algorithm,
             log_dir=str(output_dir),
             seed=seed,
             run_name=f"{run_name}_seed_{seed}",
@@ -136,7 +139,10 @@ def run_multiseed_scenario_a(seeds, log_dir="logs/multiseed", run_name="scenario
         )
         loggers.append(result["logger"])
         raw_results.append({key: value for key, value in result.items() if key != "logger"})
-    summary = _summarize(loggers, seeds)
+    algorithm_name = loggers[0].metadata["algorithm"]
+    if any(logger.metadata["algorithm"] != algorithm_name for logger in loggers):
+        raise RuntimeError("multi-seed run mixed algorithm identities")
+    summary = _summarize(loggers, seeds, algorithm_name)
     metadata = dict(loggers[0].metadata)
     metadata["seeds"] = list(seeds)
     metadata["run_name"] = run_name
@@ -147,12 +153,15 @@ def run_multiseed_scenario_a(seeds, log_dir="logs/multiseed", run_name="scenario
         "summary_json": summary_json,
         "summary_csv": summary_csv,
         "summary_plot": summary_plot,
+        "summary": summary,
+        "algorithm": algorithm_name,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run reproducible multi-seed MAT Scenario-A experiments.")
+    parser = argparse.ArgumentParser(description="Run reproducible multi-seed Scenario-A experiments.")
     parser.add_argument("--seeds", nargs="+", type=int, default=(7, 17, 29))
+    parser.add_argument("--algorithm", choices=("mat", "cpsl", "clustersfl", "pcsfl"), default="mat")
     parser.add_argument("--data-dir", default="../Data")
     parser.add_argument("--log-dir", default="logs/multiseed")
     parser.add_argument("--run-name", default="scenario_a_mat_multiseed")
@@ -169,6 +178,7 @@ def main():
     args = parser.parse_args()
     result = run_multiseed_scenario_a(
         args.seeds,
+        algorithm=args.algorithm,
         log_dir=args.log_dir,
         run_name=args.run_name,
         data_dir=args.data_dir,

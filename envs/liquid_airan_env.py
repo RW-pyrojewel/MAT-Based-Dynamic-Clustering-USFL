@@ -1,4 +1,4 @@
-﻿"""Station-local liquid AI-RAN environment with research-plan scenario support."""
+"""Station-local liquid AI-RAN environment with research-plan scenario support."""
 import numpy as np
 
 from .scenario_specs import ScenarioSpec, get_scenario_spec
@@ -101,7 +101,15 @@ class LiquidAIRANEnv:
         labels = self.vehicle_pool_labels[self.active_vehicle_slots]
         return np.concatenate([channel_gains, computes, labels], axis=1).astype(np.float32)
 
-    def calc_wireless_transmission_delay(self, cluster_choices, bw_weights, smashed_data_sizes_bytes, channel_gains):
+    def calc_wireless_transmission_delay(
+        self,
+        cluster_choices,
+        bw_weights,
+        smashed_data_sizes_bytes,
+        channel_gains,
+        available_migs=None,
+        bandwidth_hz=None,
+    ):
         """Compute each active cluster's synchronized uplink bottleneck delay."""
         clusters = np.asarray(cluster_choices)
         bandwidths = np.asarray(bw_weights, dtype=np.float64)
@@ -112,7 +120,13 @@ class LiquidAIRANEnv:
             raise ValueError("cluster choices, bandwidth weights and data sizes must have shape (N,)")
         if gains.shape != (client_count,) or not np.isfinite(gains).all() or (gains < 0.0).any():
             raise ValueError("channel_gains must be a finite non-negative array of shape (N,)")
-        if (clusters < 0).any() or (clusters >= self.current_migs).any():
+        current_migs = self.current_migs if available_migs is None else int(available_migs)
+        current_bandwidth = self.current_bandwidth if bandwidth_hz is None else float(bandwidth_hz)
+        if current_migs < 1 or current_migs > self.max_migs:
+            raise ValueError("available_migs must be in [1, max_migs]")
+        if current_bandwidth <= 0.0:
+            raise ValueError("bandwidth_hz must be positive")
+        if (clusters < 0).any() or (clusters >= current_migs).any():
             raise ValueError("cluster choices must reference currently available MIGs")
         if (bandwidths < 0.0).any() or (sizes < 0.0).any():
             raise ValueError("bandwidth weights and data sizes must be non-negative")
@@ -120,10 +134,10 @@ class LiquidAIRANEnv:
             raise ValueError("bandwidth allocations must not exceed the global budget")
 
         cluster_delays = np.zeros(self.max_migs, dtype=np.float64)
-        for mig_id in range(self.current_migs):
+        for mig_id in range(current_migs):
             members = clusters == mig_id
             if not members.any():
                 continue
-            rates_bps = bandwidths[members] * self.current_bandwidth * np.log2(1.0 + 10.0 * gains[members])
+            rates_bps = bandwidths[members] * current_bandwidth * np.log2(1.0 + 10.0 * gains[members])
             cluster_delays[mig_id] = np.max((sizes[members] * 8.0) / np.maximum(rates_bps, 1e-9))
         return cluster_delays

@@ -1,17 +1,20 @@
-﻿"""Real CIFAR-100 and USFL training runner for research-plan scenario A."""
+"""Real CIFAR-100 and USFL training runner for research-plan scenario A."""
 import argparse
 import copy
 import json
+import random
 import time
 
 import numpy as np
 import torch
 import torch.nn.functional as functional
 
+from baselines import CPSLAgent, ClusterSFLAgent, PCSFLAgent
 from data import CIFAR100NonIIDProvider
 from envs import LiquidAIRANEnv
 from models.mat_agent import MATAgent
 from models.usfl_networks import ResNet18_USFL
+from scenario_a_trace import build_scenario_a_trace
 from utils.logger import SimulationLogger
 from utils.mat_reward import MATRewardConfig, compute_mat_reward
 from utils.trajectory_buffer import MATTrajectoryBuffer
@@ -33,11 +36,11 @@ def _next_batch(provider, iterators, client_id, batch_size):
 def _act(agent, state, available_migs, edge_state, deterministic):
     action, log_prob = agent.act(state, available_migs, edge_state, deterministic=deterministic)
     if (action["cluster"] < 0).any() or (action["cluster"] >= available_migs).any():
-        raise ValueError("MAT produced a cluster outside the available MIG range")
+        raise ValueError("agent produced a cluster outside the available MIG range")
     if not np.all(action["l1"] < action["l2"]):
-        raise ValueError("MAT produced an invalid USFL split pair")
+        raise ValueError("agent produced an invalid USFL split pair")
     if action["bw"].sum() > 1.0 + 1e-6:
-        raise ValueError("MAT exceeded the global bandwidth budget")
+        raise ValueError("agent exceeded the global bandwidth budget")
     return action, log_prob
 
 
@@ -52,12 +55,16 @@ def _run_usfl_round(model, optimizer, provider, iterators, client_ids, action, d
 
     for _ in range(local_steps):
         optimizer.zero_grad(set_to_none=True)
-        for mig_id in np.unique(action["cluster"]):
-            members = np.flatnonzero(action["cluster"] == mig_id)
+        execution_groups = np.asarray(action.get("virtual_cluster", action["cluster"]), dtype=np.int64)
+        for group_id in np.unique(execution_groups):
+            members = np.flatnonzero(execution_groups == group_id)
+            mig_id = int(action["cluster"][members[0]])
+            if not np.all(action["cluster"][members] == mig_id):
+                raise ValueError("an execution group must map to one physical MIG")
             l1 = int(action["l1"][members[0]])
             l2 = int(action["l2"][members[0]])
             if not np.all(action["l1"][members] == l1) or not np.all(action["l2"][members] == l2):
-                raise ValueError("USFL requires a shared split pair within each cluster")
+                raise ValueError("USFL requires a shared split pair within each execution group")
 
             batches = [
                 _next_batch(provider, iterators, int(client_ids[index]), batch_size=iterators["batch_size"])
@@ -151,7 +158,39 @@ def _flush_ppo(agent, buffer):
     buffer.clear()
 
 
-def run_mat_scenario_a(
+def _build_agent(algorithm, state_dim, device, min_bandwidth_share):
+    algorithm = algorithm.lower()
+    if algorithm == "mat":
+        return "MAT-RL", MATAgent(
+            state_dim=state_dim, hidden_dim=128, num_migs=7, num_cut_layers=7,
+            min_bandwidth_share=min_bandwidth_share, device=device,
+        )
+    if algorithm == "cpsl":
+        return "Adapted-CPSL", CPSLAgent(fixed_clusters=2, fixed_l1=3, fixed_l2=4)
+    if algorithm == "clustersfl":
+        return "Adapted-ClusterSFL", ClusterSFLAgent(num_cut_layers=7)
+    if algorithm == "pcsfl":
+        return "Adapted-PCSFL", PCSFLAgent(
+            state_dim=state_dim, max_clients=10, max_migs=7, num_cut_layers=7, device=device,
+        )
+    raise ValueError("algorithm must be one of: mat, cpsl, clustersfl, pcsfl")
+
+
+def _append_transition(agent, buffer, previous, state, edge_state, done):
+    if isinstance(agent, MATAgent):
+        buffer.append(
+            previous["state"], previous["edge_state"], previous["action"], previous["reward"],
+            state, edge_state, done, previous["log_prob"], previous["available_migs"],
+        )
+    elif isinstance(agent, PCSFLAgent):
+        agent.observe(
+            previous["state"], previous["edge_state"], previous["action"], previous["reward"],
+            state, edge_state, done,
+        )
+
+
+def run_scenario_a(
+    algorithm="mat",
     data_dir="../Data",
     log_dir="logs",
     total_epochs=150,
@@ -167,8 +206,10 @@ def run_mat_scenario_a(
     device=None,
     create_plots=True,
     run_name=None,
+    trace=None,
 ):
-    """Run online MAT control with actual CIFAR-100 USFL training in scenario A."""
+    """Run one controller against a shared exogenous Scenario-A trace."""
+    algorithm = algorithm.lower()
     if not 1 <= total_epochs <= 150:
         raise ValueError("total_epochs must be in [1, 150]")
     if min(batch_size, local_steps, ppo_update_interval, fedavg_interval, evaluation_batches) < 1:
@@ -179,54 +220,57 @@ def run_mat_scenario_a(
         raise ValueError("min_bandwidth_share must be in (0, 0.1) for scenario A")
 
     np.random.seed(seed)
+    random.seed(seed)
     torch.manual_seed(seed)
     execution_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     provider = CIFAR100NonIIDProvider(num_clients=30, alpha=0.1, data_dir=data_dir, seed=seed)
-    environments = {
+    trace = trace or build_scenario_a_trace(provider, seed=seed, total_epochs=total_epochs)
+    if trace.total_epochs < total_epochs:
+        raise ValueError("trace is shorter than total_epochs")
+    calculators = {
         station_id: LiquidAIRANEnv(
             provider, max_vehicles=10, max_migs=7, scenario="A", station_id=station_id,
             vehicle_id_offset=(station_id - 1) * 10, seed=seed + station_id,
         )
         for station_id in (1, 2, 3)
     }
-    models = {station_id: ResNet18_USFL(num_classes=provider.num_classes).to(execution_device) for station_id in environments}
+    models = {station_id: ResNet18_USFL(num_classes=provider.num_classes).to(execution_device) for station_id in calculators}
     optimizers = {
         station_id: torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=5e-4)
         for station_id, model in models.items()
     }
     _warm_up_models(models, execution_device, batch_size)
-    iterators = {station_id: {"batch_size": batch_size} for station_id in environments}
-    agent = MATAgent(state_dim=2 + provider.num_classes, hidden_dim=128, num_migs=7, num_cut_layers=7, min_bandwidth_share=min_bandwidth_share, device=execution_device)
+    iterators = {station_id: {"batch_size": batch_size} for station_id in calculators}
+    algorithm_name, agent = _build_agent(algorithm, 2 + provider.num_classes, execution_device, min_bandwidth_share)
     reward_config = MATRewardConfig(cluster_size_limit=10)
     buffer = MATTrajectoryBuffer()
     pending = {}
-    logger = SimulationLogger(log_dir=log_dir, run_name=run_name or f"scenario_a_mat_seed_{seed}")
+    logger = SimulationLogger(log_dir=log_dir, run_name=run_name or f"scenario_a_{algorithm}_seed_{seed}")
     logger.set_metadata(
-        scenario="A", algorithm="MAT-RL", dataset="CIFAR-100", num_stations=3, clients_per_station=10,
+        scenario="A", algorithm=algorithm_name, dataset="CIFAR-100", num_stations=3, clients_per_station=10,
         total_epochs=total_epochs, batch_size=batch_size, local_steps=local_steps, warmup_epochs=warmup_epochs,
-        client_gradient_normalization=True, optimizer_momentum_reset_on_fedavg=True, min_bandwidth_share=min_bandwidth_share,
-        fedavg_interval=fedavg_interval, seed=seed, device=str(execution_device),
+        client_gradient_normalization=True, optimizer_momentum_reset_on_fedavg=True,
+        min_bandwidth_share=min_bandwidth_share, baseline_bandwidth_policy="equal-global-share",
+        fedavg_interval=fedavg_interval, seed=seed, device=str(execution_device), trace_id=trace.trace_id,
     )
 
     for epoch in range(1, total_epochs + 1):
         is_warmup = epoch <= warmup_epochs
-        observations = {station_id: environment.step() for station_id, environment in environments.items()}
-        for station_id, (state, available_migs, bandwidth, client_ids) in observations.items():
+        for station_id in calculators:
+            state, available_migs, bandwidth, client_ids = trace.get(epoch, station_id)
             edge_state = np.asarray([available_migs, bandwidth], dtype=np.float32)
             previous = pending.pop(station_id, None)
-            if previous is not None and not is_warmup:
-                buffer.append(
-                    previous["state"], previous["edge_state"], previous["action"], previous["reward"],
-                    state, edge_state, False, previous["log_prob"], previous["available_migs"],
-                )
+            if previous is not None:
+                _append_transition(agent, buffer, previous, state, edge_state, False)
 
             action, log_prob = _act(agent, state, available_migs, edge_state, deterministic=False)
             training = _run_usfl_round(
                 models[station_id], optimizers[station_id], provider, iterators[station_id], client_ids,
                 action, execution_device, local_steps,
             )
-            tx_delays = environments[station_id].calc_wireless_transmission_delay(
-                action["cluster"], action["bw"], training["smashed_sizes"], state[:, 0]
+            tx_delays = calculators[station_id].calc_wireless_transmission_delay(
+                action["cluster"], action["bw"], training["smashed_sizes"], state[:, 0],
+                available_migs=available_migs, bandwidth_hz=bandwidth,
             )
             total_delay = max(
                 tx_delays[mig_id] + training["cluster_compute_delays"].get(mig_id, 0.0)
@@ -236,21 +280,21 @@ def run_mat_scenario_a(
             reward, reward_terms = compute_mat_reward(
                 total_delay, state[:, 2:], action["cluster"], action["bw"], reward_config
             )
-            if not is_warmup:
+            updates_online = algorithm == "pcsfl" or (algorithm == "mat" and not is_warmup)
+            if updates_online:
                 pending[station_id] = {
                     "state": state, "edge_state": edge_state, "action": action, "reward": reward,
                     "log_prob": log_prob, "available_migs": available_migs,
                 }
             logger.log_metrics(
-                "MAT-RL",
+                algorithm_name,
                 epoch=epoch, station_id=station_id, is_warmup=is_warmup, vehicle_count=len(state),
                 available_migs=available_migs, bandwidth_hz=bandwidth,
-                bandwidth_allocation_sum=float(action["bw"].sum()),
-                bandwidth_unused=float(1.0 - action["bw"].sum()),
-                min_bandwidth_share=float(action["bw"].min()),
-                max_bandwidth_share=float(action["bw"].max()),
-                mean_l1=float(action["l1"].mean()),
-                mean_l2=float(action["l2"].mean()),
+                physical_cluster_count=int(len(np.unique(action["cluster"]))),
+                virtual_cluster_count=int(len(np.unique(action.get("virtual_cluster", action["cluster"])))),
+                bandwidth_allocation_sum=float(action["bw"].sum()), bandwidth_unused=float(1.0 - action["bw"].sum()),
+                min_bandwidth_share=float(action["bw"].min()), max_bandwidth_share=float(action["bw"].max()),
+                mean_l1=float(action["l1"].mean()), mean_l2=float(action["l2"].mean()),
                 smashed_data_bytes_total=float(training["smashed_sizes"].sum()),
                 smashed_data_bytes_per_client_mean=float(training["smashed_sizes"].mean()),
                 total_delay_ms=total_delay * 1000.0, tx_delay_ms=float(tx_delays.max()) * 1000.0,
@@ -261,25 +305,37 @@ def run_mat_scenario_a(
         if epoch % fedavg_interval == 0:
             _fedavg(list(models.values()), list(optimizers.values()))
             test_accuracy = _evaluate_global_model(models[1], provider, execution_device, evaluation_batches)
-            for row in logger.records["MAT-RL"][-3:]:
+            for row in logger.records[algorithm_name][-3:]:
                 row["test_accuracy"] = test_accuracy
-        if not is_warmup and len(buffer) >= ppo_update_interval:
+        if algorithm == "mat" and not is_warmup and len(buffer) >= ppo_update_interval:
             _flush_ppo(agent, buffer)
 
     for terminal in pending.values():
-        buffer.append(
-            terminal["state"], terminal["edge_state"], terminal["action"], terminal["reward"],
-            terminal["state"], terminal["edge_state"], True, terminal["log_prob"], terminal["available_migs"],
-        )
-    _flush_ppo(agent, buffer)
+        _append_transition(agent, buffer, terminal, terminal["state"], terminal["edge_state"], True)
+    if algorithm == "mat":
+        _flush_ppo(agent, buffer)
     csv_paths = logger.export_to_csv()
     json_path = logger.export_to_json()
-    plot_paths = logger.plot_scenario_a("MAT-RL", warmup_epochs=warmup_epochs) if create_plots else []
-    return {"logger": logger, "csv_paths": csv_paths, "json_path": json_path, "plot_paths": plot_paths, "device": str(execution_device)}
+    plot_paths = logger.plot_scenario_a(algorithm_name, warmup_epochs=warmup_epochs) if create_plots else []
+    return {
+        "logger": logger, "csv_paths": csv_paths, "json_path": json_path, "plot_paths": plot_paths,
+        "device": str(execution_device), "trace_id": trace.trace_id,
+    }
 
 
+def run_mat_scenario_a(**kwargs):
+    """Compatibility wrapper for the original MAT-only Scenario-A entry point."""
+    return run_scenario_a(algorithm="mat", **kwargs)
+
+
+def run_baseline_scenario_a(algorithm, **kwargs):
+    """Run one adapted CPSL, ClusterSFL, or PCSFL baseline in Scenario A."""
+    if algorithm.lower() == "mat":
+        raise ValueError("use run_mat_scenario_a for MAT-RL")
+    return run_scenario_a(algorithm=algorithm, **kwargs)
 def main():
-    parser = argparse.ArgumentParser(description="Run real CIFAR-100 USFL training with MAT in scenario A.")
+    parser = argparse.ArgumentParser(description="Run one Scenario-A controller with real CIFAR-100 USFL training.")
+    parser.add_argument("--algorithm", choices=("mat", "cpsl", "clustersfl", "pcsfl"), default="mat")
     parser.add_argument("--data-dir", default="../Data")
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--epochs", type=int, default=150)
@@ -296,7 +352,8 @@ def main():
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--run-name", default=None)
     args = parser.parse_args()
-    result = run_mat_scenario_a(
+    result = run_scenario_a(
+        algorithm=args.algorithm,
         data_dir=args.data_dir, log_dir=args.log_dir, total_epochs=args.epochs, seed=args.seed,
         batch_size=args.batch_size, local_steps=args.local_steps, warmup_epochs=args.warmup_epochs,
         min_bandwidth_share=args.min_bandwidth_share,
