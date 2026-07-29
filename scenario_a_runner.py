@@ -159,12 +159,14 @@ def run_mat_scenario_a(
     batch_size=16,
     local_steps=4,
     warmup_epochs=5,
+    min_bandwidth_share=0.01,
     learning_rate=0.01,
     ppo_update_interval=16,
     fedavg_interval=10,
     evaluation_batches=10,
     device=None,
     create_plots=True,
+    run_name=None,
 ):
     """Run online MAT control with actual CIFAR-100 USFL training in scenario A."""
     if not 1 <= total_epochs <= 150:
@@ -173,6 +175,8 @@ def run_mat_scenario_a(
         raise ValueError("training intervals and batch size must be positive")
     if not 0 <= warmup_epochs < total_epochs:
         raise ValueError("warmup_epochs must be non-negative and smaller than total_epochs")
+    if not 0.0 < min_bandwidth_share < 0.1:
+        raise ValueError("min_bandwidth_share must be in (0, 0.1) for scenario A")
 
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -192,15 +196,15 @@ def run_mat_scenario_a(
     }
     _warm_up_models(models, execution_device, batch_size)
     iterators = {station_id: {"batch_size": batch_size} for station_id in environments}
-    agent = MATAgent(state_dim=2 + provider.num_classes, hidden_dim=128, num_migs=7, num_cut_layers=7, device=execution_device)
+    agent = MATAgent(state_dim=2 + provider.num_classes, hidden_dim=128, num_migs=7, num_cut_layers=7, min_bandwidth_share=min_bandwidth_share, device=execution_device)
     reward_config = MATRewardConfig(cluster_size_limit=10)
     buffer = MATTrajectoryBuffer()
     pending = {}
-    logger = SimulationLogger(log_dir=log_dir, run_name="scenario_a_mat")
+    logger = SimulationLogger(log_dir=log_dir, run_name=run_name or f"scenario_a_mat_seed_{seed}")
     logger.set_metadata(
         scenario="A", algorithm="MAT-RL", dataset="CIFAR-100", num_stations=3, clients_per_station=10,
         total_epochs=total_epochs, batch_size=batch_size, local_steps=local_steps, warmup_epochs=warmup_epochs,
-        client_gradient_normalization=True, optimizer_momentum_reset_on_fedavg=True,
+        client_gradient_normalization=True, optimizer_momentum_reset_on_fedavg=True, min_bandwidth_share=min_bandwidth_share,
         fedavg_interval=fedavg_interval, seed=seed, device=str(execution_device),
     )
 
@@ -243,6 +247,12 @@ def run_mat_scenario_a(
                 available_migs=available_migs, bandwidth_hz=bandwidth,
                 bandwidth_allocation_sum=float(action["bw"].sum()),
                 bandwidth_unused=float(1.0 - action["bw"].sum()),
+                min_bandwidth_share=float(action["bw"].min()),
+                max_bandwidth_share=float(action["bw"].max()),
+                mean_l1=float(action["l1"].mean()),
+                mean_l2=float(action["l2"].mean()),
+                smashed_data_bytes_total=float(training["smashed_sizes"].sum()),
+                smashed_data_bytes_per_client_mean=float(training["smashed_sizes"].mean()),
                 total_delay_ms=total_delay * 1000.0, tx_delay_ms=float(tx_delays.max()) * 1000.0,
                 compute_delay_ms=compute_delay * 1000.0, reward=reward, train_loss=training["train_loss"],
                 train_accuracy=training["train_accuracy"], test_accuracy=None, **reward_terms,
@@ -277,19 +287,22 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--local-steps", type=int, default=4)
     parser.add_argument("--warmup-epochs", type=int, default=5)
+    parser.add_argument("--min-bandwidth-share", type=float, default=0.01)
     parser.add_argument("--learning-rate", type=float, default=0.01)
     parser.add_argument("--ppo-update-interval", type=int, default=16)
     parser.add_argument("--fedavg-interval", type=int, default=10)
     parser.add_argument("--evaluation-batches", type=int, default=10)
     parser.add_argument("--device", default=None)
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--run-name", default=None)
     args = parser.parse_args()
     result = run_mat_scenario_a(
         data_dir=args.data_dir, log_dir=args.log_dir, total_epochs=args.epochs, seed=args.seed,
         batch_size=args.batch_size, local_steps=args.local_steps, warmup_epochs=args.warmup_epochs,
+        min_bandwidth_share=args.min_bandwidth_share,
         learning_rate=args.learning_rate, ppo_update_interval=args.ppo_update_interval,
         fedavg_interval=args.fedavg_interval, evaluation_batches=args.evaluation_batches,
-        device=args.device, create_plots=not args.no_plots,
+        device=args.device, create_plots=not args.no_plots, run_name=args.run_name,
     )
     print(json.dumps({key: value for key, value in result.items() if key != "logger"}, indent=2))
 

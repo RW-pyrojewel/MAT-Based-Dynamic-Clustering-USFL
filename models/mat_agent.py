@@ -9,13 +9,14 @@ from models.mat_components import AutoregressiveDecoder, HeterogeneousEncoder
 
 
 class MATAgent(BaseAgent):
-    def __init__(self, state_dim, hidden_dim=128, num_migs=7, num_cut_layers=7, edge_state_dim=2, device="cpu"):
+    def __init__(self, state_dim, hidden_dim=128, num_migs=7, num_cut_layers=7, edge_state_dim=2, min_bandwidth_share=0.01, device="cpu"):
         super().__init__(agent_name="MAT-RL Agent (Proposed)")
         if num_cut_layers < 2:
             raise ValueError("num_cut_layers must be at least two")
         self.device, self.num_migs, self.num_cut_layers = torch.device(device), num_migs, num_cut_layers
+        self.min_bandwidth_share = float(min_bandwidth_share)
         self.encoder = HeterogeneousEncoder(state_dim, hidden_dim, edge_state_dim=edge_state_dim).to(self.device)
-        self.decoder = AutoregressiveDecoder(hidden_dim, num_migs).to(self.device)
+        self.decoder = AutoregressiveDecoder(hidden_dim, num_migs, min_bandwidth_share=self.min_bandwidth_share).to(self.device)
         self.cluster_l1_head = nn.Linear(hidden_dim, num_cut_layers - 1).to(self.device)
         self.cluster_l2_head = nn.Linear(hidden_dim, num_cut_layers).to(self.device)
         self.value_head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Linear(hidden_dim // 2, 1)).to(self.device)

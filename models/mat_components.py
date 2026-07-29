@@ -30,13 +30,16 @@ class HeterogeneousEncoder(nn.Module):
 
 
 class AutoregressiveDecoder(nn.Module):
-    """Autoregressive joint policy with a globally feasible bandwidth allocation."""
+    """Autoregressive policy with minimum-share global bandwidth allocations."""
 
     _EPS = 1e-6
 
-    def __init__(self, hidden_dim, num_migs, num_cut_layers=None, num_heads=4):
+    def __init__(self, hidden_dim, num_migs, num_cut_layers=None, num_heads=4, min_bandwidth_share=0.01):
         super().__init__()
+        if not 0.0 <= min_bandwidth_share < 1.0:
+            raise ValueError("min_bandwidth_share must be in [0, 1)")
         self.num_migs = num_migs
+        self.min_bandwidth_share = float(min_bandwidth_share)
         self.context_embed = nn.Linear(num_migs * 2, hidden_dim)
         self.attention = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
         self.fusion_norm = nn.LayerNorm(hidden_dim)
@@ -64,12 +67,20 @@ class AutoregressiveDecoder(nn.Module):
 
     @classmethod
     def _remaining_bandwidth(cls, history):
-        return (1.0 - history[:, 1::2].sum(dim=1)).clamp_min(cls._EPS)
+        return (1.0 - history[:, 1::2].sum(dim=1)).clamp_min(0.0)
+
+    def _allocation_interval(self, history, clients_remaining_after_current):
+        remaining = self._remaining_bandwidth(history)
+        lower = remaining.new_full(remaining.shape, self.min_bandwidth_share)
+        upper = remaining - clients_remaining_after_current * self.min_bandwidth_share
+        if torch.any(upper < lower - self._EPS):
+            raise ValueError("minimum bandwidth share is infeasible for this client count")
+        return lower, (upper - lower).clamp_min(0.0), remaining
 
     @classmethod
-    def _allocation_log_prob(cls, distribution, allocation, remaining):
-        fraction = (allocation / remaining).clamp(cls._EPS, 1.0 - cls._EPS)
-        return distribution.log_prob(torch.logit(fraction)) - torch.log(remaining * fraction * (1.0 - fraction))
+    def _bounded_log_prob(cls, distribution, allocation, lower, width):
+        fraction = ((allocation - lower) / width).clamp(cls._EPS, 1.0 - cls._EPS)
+        return distribution.log_prob(torch.logit(fraction)) - torch.log(width * fraction * (1.0 - fraction))
 
     def _update_history(self, history, choices, allocation):
         updated = history.clone()
@@ -80,20 +91,28 @@ class AutoregressiveDecoder(nn.Module):
 
     def act(self, encoded_states, available_migs, deterministic=False):
         _, client_count, _ = encoded_states.shape
+        if client_count * self.min_bandwidth_share >= 1.0:
+            raise ValueError("minimum bandwidth share is infeasible for the active client count")
         history = encoded_states.new_zeros(encoded_states.size(0), self.num_migs * 2)
         choices, allocations, log_probs, entropies = [], [], [], []
         for index in range(client_count):
             features = self._fuse(encoded_states[:, index:index + 1], history)
             cluster_dist = self._cluster_dist(features, available_migs)
             choice = cluster_dist.probs.argmax(-1) if deterministic else cluster_dist.sample()
-            bandwidth_dist = self._bandwidth_dist(features)
-            latent = bandwidth_dist.mean if deterministic else bandwidth_dist.rsample()
-            remaining = self._remaining_bandwidth(history)
-            allocation = remaining * torch.sigmoid(latent)
-            log_probs.append(
-                cluster_dist.log_prob(choice) + self._allocation_log_prob(bandwidth_dist, allocation, remaining)
-            )
-            entropies.append(cluster_dist.entropy() + bandwidth_dist.entropy())
+            remaining_after_current = client_count - index - 1
+            lower, width, remaining = self._allocation_interval(history, remaining_after_current)
+            if remaining_after_current == 0:
+                allocation = remaining
+                bandwidth_log_prob = allocation.new_zeros(allocation.shape)
+                bandwidth_entropy = allocation.new_zeros(allocation.shape)
+            else:
+                bandwidth_dist = self._bandwidth_dist(features)
+                latent = bandwidth_dist.mean if deterministic else bandwidth_dist.rsample()
+                allocation = lower + width * torch.sigmoid(latent)
+                bandwidth_log_prob = self._bounded_log_prob(bandwidth_dist, allocation, lower, width)
+                bandwidth_entropy = bandwidth_dist.entropy()
+            log_probs.append(cluster_dist.log_prob(choice) + bandwidth_log_prob)
+            entropies.append(cluster_dist.entropy() + bandwidth_entropy)
             history = self._update_history(history, choice, allocation)
             choices.append(choice)
             allocations.append(allocation)
@@ -106,19 +125,28 @@ class AutoregressiveDecoder(nn.Module):
 
     def evaluate_actions(self, encoded_states, cluster_choices, bandwidths, available_migs):
         _, client_count, _ = encoded_states.shape
+        if client_count * self.min_bandwidth_share >= 1.0:
+            raise ValueError("minimum bandwidth share is infeasible for the active client count")
         history = encoded_states.new_zeros(encoded_states.size(0), self.num_migs * 2)
         log_probs, entropies = [], []
         for index in range(client_count):
             features = self._fuse(encoded_states[:, index:index + 1], history)
             cluster_dist = self._cluster_dist(features, available_migs)
             choice, allocation = cluster_choices[:, index].long(), bandwidths[:, index]
-            bandwidth_dist = self._bandwidth_dist(features)
-            remaining = self._remaining_bandwidth(history)
-            if torch.any(allocation <= 0.0) or torch.any(allocation >= remaining):
-                raise ValueError("bandwidth allocations must be inside the remaining global budget")
-            log_probs.append(
-                cluster_dist.log_prob(choice) + self._allocation_log_prob(bandwidth_dist, allocation, remaining)
-            )
-            entropies.append(cluster_dist.entropy() + bandwidth_dist.entropy())
+            remaining_after_current = client_count - index - 1
+            lower, width, remaining = self._allocation_interval(history, remaining_after_current)
+            if remaining_after_current == 0:
+                if torch.any((allocation - remaining).abs() > 1e-4):
+                    raise ValueError("the final client must receive all remaining bandwidth")
+                bandwidth_log_prob = allocation.new_zeros(allocation.shape)
+                bandwidth_entropy = allocation.new_zeros(allocation.shape)
+            else:
+                if torch.any(allocation <= lower) or torch.any(allocation >= lower + width):
+                    raise ValueError("bandwidth allocation is outside its feasible autoregressive interval")
+                bandwidth_dist = self._bandwidth_dist(features)
+                bandwidth_log_prob = self._bounded_log_prob(bandwidth_dist, allocation, lower, width)
+                bandwidth_entropy = bandwidth_dist.entropy()
+            log_probs.append(cluster_dist.log_prob(choice) + bandwidth_log_prob)
+            entropies.append(cluster_dist.entropy() + bandwidth_entropy)
             history = self._update_history(history, choice, allocation)
         return torch.stack(log_probs, 1).sum(1), torch.stack(entropies, 1).sum(1)

@@ -1,0 +1,43 @@
+{
+  "raw_results": [
+    {
+      "csv_paths": [
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_7_MAT_RL_20260729_102037.csv"
+      ],
+      "json_path": "logs\\multiseed\\scenario_a_mat_multiseed_seed_7_20260729_102037.json",
+      "plot_paths": [
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_7_latency_reward.png",
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_7_mig_tide.png",
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_7_training_loss.png"
+      ],
+      "device": "cuda"
+    },
+    {
+      "csv_paths": [
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_17_MAT_RL_20260729_102930.csv"
+      ],
+      "json_path": "logs\\multiseed\\scenario_a_mat_multiseed_seed_17_20260729_102930.json",
+      "plot_paths": [
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_17_latency_reward.png",
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_17_mig_tide.png",
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_17_training_loss.png"
+      ],
+      "device": "cuda"
+    },
+    {
+      "csv_paths": [
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_29_MAT_RL_20260729_103848.csv"
+      ],
+      "json_path": "logs\\multiseed\\scenario_a_mat_multiseed_seed_29_20260729_103848.json",
+      "plot_paths": [
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_29_latency_reward.png",
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_29_mig_tide.png",
+        "logs\\multiseed\\scenario_a_mat_multiseed_seed_29_training_loss.png"
+      ],
+      "device": "cuda"
+    }
+  ],
+  "summary_json": "logs\\multiseed\\scenario_a_mat_multiseed_summary_20260729_103849.json",
+  "summary_csv": "logs\\multiseed\\scenario_a_mat_multiseed_summary_20260729_103849.csv",
+  "summary_plot": "logs\\multiseed\\scenario_a_mat_multiseed_summary.png"
+}
