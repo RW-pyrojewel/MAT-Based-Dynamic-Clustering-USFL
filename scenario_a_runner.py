@@ -296,6 +296,11 @@ def run_scenario_a(
         reward_delay_weight=reward_config.delay_weight,
         reward_delay_reference_seconds=reward_config.delay_reference_seconds,
         reward_cluster_capacity_enabled=reward_config.cluster_size_limit is not None,
+        ppo_value_clip_ratio=getattr(agent, "value_clip_ratio", None),
+        ppo_max_grad_norm=getattr(agent, "max_grad_norm", None),
+        ppo_huber_delta=getattr(agent, "huber_delta", None),
+        ppo_advantage_normalization="station-local" if algorithm == "mat" else None,
+        ppo_value_normalization="station-local-affine-loss" if algorithm == "mat" else None,
         fedavg_interval=fedavg_interval, seed=seed, device=str(execution_device), trace_id=trace.trace_id,
     )
 

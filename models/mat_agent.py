@@ -22,6 +22,9 @@ class MATAgent(BaseAgent):
         gae_lambda=0.95,
         ppo_epochs=4,
         minibatch_size=8,
+        value_clip_ratio=0.2,
+        max_grad_norm=0.5,
+        huber_delta=1.0,
         device="cpu",
     ):
         super().__init__(agent_name="MAT-RL Agent (Proposed)")
@@ -29,6 +32,12 @@ class MATAgent(BaseAgent):
             raise ValueError("num_cut_layers must be at least two")
         if nominal_bandwidth_hz <= 0.0:
             raise ValueError("nominal_bandwidth_hz must be positive")
+        if value_clip_ratio <= 0.0:
+            raise ValueError("value_clip_ratio must be positive")
+        if max_grad_norm <= 0.0:
+            raise ValueError("max_grad_norm must be positive")
+        if huber_delta <= 0.0:
+            raise ValueError("huber_delta must be positive")
         self.device = torch.device(device)
         self.num_migs = int(num_migs)
         self.num_cut_layers = int(num_cut_layers)
@@ -39,6 +48,9 @@ class MATAgent(BaseAgent):
         self.ppo_epochs = int(ppo_epochs)
         self.minibatch_size = int(minibatch_size)
         self.clip_ratio = 0.2
+        self.value_clip_ratio = float(value_clip_ratio)
+        self.max_grad_norm = float(max_grad_norm)
+        self.huber_delta = float(huber_delta)
         self.value_coef = 0.5
         self.entropy_coef = 0.01
         self.encoder = HeterogeneousEncoder(state_dim, hidden_dim, edge_state_dim=edge_state_dim).to(self.device)
@@ -196,19 +208,39 @@ class MATAgent(BaseAgent):
                 0.0 if done else self.get_value(next_state, next_edge)
                 for next_state, next_edge, done in zip(next_states, next_edge_states, dones)
             ], dtype=np.float32)
-        advantages = np.zeros_like(rewards)
+        station_ids = np.asarray(station_ids, dtype=np.int64)
+        epochs = np.asarray(epochs, dtype=np.int64)
+        raw_advantages = np.zeros_like(rewards)
         for station_id in np.unique(station_ids):
-            indices = [index for index, value in enumerate(station_ids) if value == station_id]
+            indices = np.flatnonzero(station_ids == station_id).tolist()
             indices.sort(key=lambda index: epochs[index], reverse=True)
             next_advantage = 0.0
             for index in indices:
                 nonterminal = 0.0 if dones[index] else 1.0
                 delta = rewards[index] + self.gamma * next_values[index] * nonterminal - values[index]
-                advantages[index] = delta + self.gamma * self.gae_lambda * nonterminal * next_advantage
-                next_advantage = advantages[index]
-        returns = advantages + values
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        return advantages, returns
+                raw_advantages[index] = delta + self.gamma * self.gae_lambda * nonterminal * next_advantage
+                next_advantage = raw_advantages[index]
+        returns = raw_advantages + values
+        advantages = np.zeros_like(raw_advantages)
+        station_stats = {}
+        for station_id in np.unique(station_ids):
+            indices = np.flatnonzero(station_ids == station_id)
+            station_advantages = raw_advantages[indices]
+            advantage_mean = float(station_advantages.mean())
+            advantage_std = float(station_advantages.std())
+            if advantage_std > 1e-8:
+                advantages[indices] = (station_advantages - advantage_mean) / advantage_std
+            else:
+                advantages[indices] = 0.0
+            station_returns = returns[indices]
+            return_std = float(station_returns.std())
+            station_stats[int(station_id)] = {
+                "indices": indices,
+                "return_mean": float(station_returns.mean()),
+                "return_std": return_std,
+                "return_scale": return_std if return_std > 1e-6 else 1.0,
+            }
+        return advantages, returns, station_stats
 
     @staticmethod
     def _component_loss(new_log_probs, old_log_probs, advantage, clip_ratio):
@@ -220,6 +252,44 @@ class MATAgent(BaseAgent):
         approx_kl = (old_log_probs - new_log_probs).mean()
         clip_fraction = ((ratio - 1.0).abs() > clip_ratio).float().mean()
         return policy_loss, approx_kl, clip_fraction
+
+    @staticmethod
+    def _value_loss(new_value, old_value, target, return_mean, return_scale, clip_ratio, huber_delta):
+        """Clipped Huber objective in station-local normalized return coordinates."""
+        new_normalized = (new_value - return_mean) / return_scale
+        old_normalized = (old_value - return_mean) / return_scale
+        target_normalized = (target - return_mean) / return_scale
+        clipped_value = old_normalized + (new_normalized - old_normalized).clamp(-clip_ratio, clip_ratio)
+        unclipped_loss = functional.smooth_l1_loss(
+            new_normalized, target_normalized, reduction="none", beta=huber_delta,
+        )
+        clipped_loss = functional.smooth_l1_loss(
+            clipped_value, target_normalized, reduction="none", beta=huber_delta,
+        )
+        value_loss = torch.maximum(unclipped_loss, clipped_loss).mean()
+        clip_fraction = ((new_normalized - old_normalized).abs() > clip_ratio).float().mean()
+        return value_loss, clip_fraction
+
+    @staticmethod
+    def _gradient_norm(parameters):
+        squared_norms = [
+            parameter.grad.detach().float().norm(2).square()
+            for parameter in parameters
+            if parameter.grad is not None
+        ]
+        if not squared_norms:
+            return 0.0
+        return float(torch.stack(squared_norms).sum().sqrt().item())
+
+    @staticmethod
+    def _explained_variance(targets, predictions):
+        targets = np.asarray(targets, dtype=np.float64)
+        predictions = np.asarray(predictions, dtype=np.float64)
+        target_variance = float(np.var(targets))
+        if target_variance <= 1e-12:
+            return 0.0
+        value = 1.0 - float(np.var(targets - predictions)) / target_variance
+        return value if np.isfinite(value) else 0.0
 
     def update_policy(self, rewards, next_states, dones, **kwargs):
         states = kwargs.get("states")
@@ -233,7 +303,7 @@ class MATAgent(BaseAgent):
         required = (states, actions, edge_states, next_edge_states, available_migs, policy_infos, station_ids, epochs)
         if any(value is None for value in required) or len(states) == 0:
             return {}
-        advantages, returns = self._compute_gae(
+        advantages, returns, station_stats = self._compute_gae(
             rewards,
             next_states,
             dones,
@@ -243,7 +313,13 @@ class MATAgent(BaseAgent):
             station_ids,
             epochs,
         )
-        diagnostics = {key: [] for key in ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction", "grad_norm")}
+        diagnostics = {
+            key: []
+            for key in (
+                "policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction",
+                "value_clip_fraction", "grad_norm_pre", "grad_norm_post",
+            )
+        }
         indices = np.arange(len(states))
         for _ in range(self.ppo_epochs):
             np.random.shuffle(indices)
@@ -255,6 +331,7 @@ class MATAgent(BaseAgent):
                 batch_entropies = []
                 batch_kls = []
                 batch_clips = []
+                batch_value_clips = []
                 for index in minibatch:
                     evaluated = self._evaluate_action(
                         states[index],
@@ -288,7 +365,14 @@ class MATAgent(BaseAgent):
                         self.clip_ratio,
                     )
                     value_target = torch.tensor(returns[index], dtype=torch.float32, device=self.device)
-                    value_loss = functional.mse_loss(evaluated["value"].squeeze(0), value_target)
+                    old_value = torch.tensor(policy_infos[index]["value"], dtype=torch.float32, device=self.device)
+                    station_stat = station_stats[int(station_ids[index])]
+                    return_mean = torch.tensor(station_stat["return_mean"], dtype=torch.float32, device=self.device)
+                    return_scale = torch.tensor(station_stat["return_scale"], dtype=torch.float32, device=self.device)
+                    value_loss, value_clip_fraction = self._value_loss(
+                        evaluated["value"].squeeze(0), old_value, value_target, return_mean,
+                        return_scale, self.value_clip_ratio, self.huber_delta,
+                    )
                     entropy = torch.cat(entropy_components).mean()
                     sample_losses.append(policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy)
                     batch_policy_losses.append(policy_loss.detach())
@@ -296,15 +380,35 @@ class MATAgent(BaseAgent):
                     batch_entropies.append(entropy.detach())
                     batch_kls.append(approx_kl.detach())
                     batch_clips.append(clip_fraction.detach())
+                    batch_value_clips.append(value_clip_fraction.detach())
                 loss = torch.stack(sample_losses).mean()
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(list(self._parameters()), 0.5)
+                parameters = list(self._parameters())
+                grad_norm_pre = float(torch.nn.utils.clip_grad_norm_(parameters, self.max_grad_norm))
+                grad_norm_post = self._gradient_norm(parameters)
                 self.optimizer.step()
                 diagnostics["policy_loss"].append(torch.stack(batch_policy_losses).mean().item())
                 diagnostics["value_loss"].append(torch.stack(batch_value_losses).mean().item())
                 diagnostics["entropy"].append(torch.stack(batch_entropies).mean().item())
                 diagnostics["approx_kl"].append(torch.stack(batch_kls).mean().item())
                 diagnostics["clip_fraction"].append(torch.stack(batch_clips).mean().item())
-                diagnostics["grad_norm"].append(float(grad_norm))
-        return {key: float(np.mean(values)) for key, values in diagnostics.items() if values}
+                diagnostics["value_clip_fraction"].append(torch.stack(batch_value_clips).mean().item())
+                diagnostics["grad_norm_pre"].append(grad_norm_pre)
+                diagnostics["grad_norm_post"].append(grad_norm_post)
+        result = {key: float(np.mean(values)) for key, values in diagnostics.items() if values}
+        result["grad_norm"] = result["grad_norm_pre"]
+        with torch.no_grad():
+            updated_values = np.asarray([
+                self.get_value(state, edge_state)
+                for state, edge_state in zip(states, edge_states)
+            ], dtype=np.float64)
+        for station_id, station_stat in station_stats.items():
+            station_indices = station_stat["indices"]
+            prefix = f"station_{station_id}"
+            result[f"{prefix}_return_mean"] = station_stat["return_mean"]
+            result[f"{prefix}_return_std"] = station_stat["return_std"]
+            result[f"{prefix}_explained_variance"] = self._explained_variance(
+                returns[station_indices], updated_values[station_indices],
+            )
+        return result

@@ -108,6 +108,11 @@ class MATRefactorTests(unittest.TestCase):
         )
         self.assertTrue(diagnostics)
         self.assertTrue(all(np.isfinite(value) for value in diagnostics.values()))
+        self.assertEqual(diagnostics["grad_norm"], diagnostics["grad_norm_pre"])
+        self.assertLessEqual(diagnostics["grad_norm_post"], agent.max_grad_norm + 1e-5)
+        self.assertIn("station_1_return_mean", diagnostics)
+        self.assertIn("station_1_explained_variance", diagnostics)
+
     def test_future_action_does_not_change_earlier_log_probs(self):
         decoder = CausalDeviceDecoder(hidden_dim=16, num_migs=3, num_heads=4, num_layers=1)
         encoded = torch.randn(1, 6, 16)
@@ -150,7 +155,7 @@ class MATRefactorTests(unittest.TestCase):
         agent = MATAgent(state_dim=102, device="cpu")
         agent.get_value = lambda state, edge: 0.0
         policy_infos = [{"value": 0.0} for _ in range(4)]
-        advantages, returns = agent._compute_gae(
+        advantages, returns, station_stats = agent._compute_gae(
             rewards=np.asarray([1.0, 10.0, 1.0, 10.0]),
             next_states=[self.state] * 4,
             dones=np.asarray([False, False, True, True]),
@@ -163,6 +168,92 @@ class MATRefactorTests(unittest.TestCase):
         self.assertTrue(np.isfinite(advantages).all())
         self.assertAlmostEqual(float(returns[0]), 1.0 + 0.99 * 0.95, places=5)
         self.assertAlmostEqual(float(returns[1]), 10.0 + 0.99 * 0.95 * 10.0, places=5)
+        for indices in ([0, 2], [1, 3]):
+            self.assertAlmostEqual(float(advantages[indices].mean()), 0.0, places=6)
+            self.assertAlmostEqual(float(advantages[indices].std()), 1.0, places=6)
+        self.assertAlmostEqual(station_stats[1]["return_mean"], float(returns[[0, 2]].mean()), places=6)
+        self.assertAlmostEqual(station_stats[2]["return_std"], float(returns[[1, 3]].std()), places=6)
+
+    def test_single_sample_station_normalization_is_finite(self):
+        agent = MATAgent(state_dim=102, device="cpu")
+        policy_infos = [{"value": 0.0} for _ in range(3)]
+        advantages, returns, station_stats = agent._compute_gae(
+            rewards=np.asarray([1.0, 10.0, 100.0]),
+            next_states=[self.state] * 3,
+            dones=np.asarray([True, True, True]),
+            edge_states=[self.edge] * 3,
+            next_edge_states=[self.edge] * 3,
+            policy_infos=policy_infos,
+            station_ids=[1, 2, 3],
+            epochs=[1, 1, 1],
+        )
+        np.testing.assert_array_equal(advantages, np.zeros(3, dtype=np.float32))
+        np.testing.assert_allclose(returns, np.asarray([1.0, 10.0, 100.0]))
+        for station_id in (1, 2, 3):
+            self.assertEqual(station_stats[station_id]["return_std"], 0.0)
+            self.assertEqual(station_stats[station_id]["return_scale"], 1.0)
+        self.assertEqual(agent._explained_variance([1.0], [50.0]), 0.0)
+
+    def test_clipped_huber_value_loss_has_finite_gradient(self):
+        new_value = torch.tensor(3.0, requires_grad=True)
+        value_loss, clip_fraction = MATAgent._value_loss(
+            new_value,
+            torch.tensor(0.0),
+            torch.tensor(1.0),
+            torch.tensor(0.0),
+            torch.tensor(1.0),
+            clip_ratio=0.2,
+            huber_delta=1.0,
+        )
+        value_loss.backward()
+        self.assertTrue(torch.isfinite(value_loss))
+        self.assertTrue(torch.isfinite(new_value.grad))
+        self.assertEqual(float(clip_fraction), 1.0)
+
+    def test_extreme_station_return_scale_keeps_ppo_finite(self):
+        agent = MATAgent(
+            state_dim=102,
+            hidden_dim=32,
+            device="cpu",
+            ppo_epochs=2,
+            minibatch_size=6,
+            max_grad_norm=0.5,
+        )
+        buffer = MATTrajectoryBuffer()
+        rewards = {1: (-1.0, -1.2), 2: (-1e6, -1.2e6), 3: (-0.5, -0.7)}
+        for epoch in (1, 2):
+            for station_id in (1, 2, 3):
+                edge = self.edge.copy()
+                if station_id == 2:
+                    edge[1] *= 0.2
+                action, policy_info = agent.act(self.state, 2, edge, deterministic=False)
+                buffer.append(
+                    self.state,
+                    edge,
+                    action,
+                    rewards[station_id][epoch - 1],
+                    self.state,
+                    edge,
+                    epoch == 2,
+                    policy_info,
+                    2,
+                    station_id,
+                    epoch,
+                )
+        kwargs = buffer.as_ppo_kwargs()
+        diagnostics = agent.update_policy(
+            kwargs.pop("rewards"), kwargs.pop("next_states"), kwargs.pop("dones"), **kwargs,
+        )
+        self.assertTrue(all(np.isfinite(value) for value in diagnostics.values()))
+        self.assertLessEqual(diagnostics["grad_norm_post"], agent.max_grad_norm + 1e-5)
+        self.assertEqual(diagnostics["grad_norm"], diagnostics["grad_norm_pre"])
+        self.assertGreater(
+            abs(diagnostics["station_2_return_mean"]),
+            1e4 * abs(diagnostics["station_1_return_mean"]),
+        )
+        for station_id in (1, 2, 3):
+            self.assertIn(f"station_{station_id}_return_std", diagnostics)
+            self.assertIn(f"station_{station_id}_explained_variance", diagnostics)
 
     def test_buffer_preserves_structured_policy_information(self):
         agent = MATAgent(state_dim=102, device="cpu")

@@ -41,7 +41,19 @@ METRICS = (
     "ppo_entropy",
     "ppo_approx_kl",
     "ppo_clip_fraction",
+    "ppo_value_clip_fraction",
     "ppo_grad_norm",
+    "ppo_grad_norm_pre",
+    "ppo_grad_norm_post",
+    "ppo_station_1_return_mean",
+    "ppo_station_1_return_std",
+    "ppo_station_1_explained_variance",
+    "ppo_station_2_return_mean",
+    "ppo_station_2_return_std",
+    "ppo_station_2_explained_variance",
+    "ppo_station_3_return_mean",
+    "ppo_station_3_return_std",
+    "ppo_station_3_explained_variance",
 )
 
 
