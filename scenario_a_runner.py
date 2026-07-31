@@ -203,7 +203,7 @@ def _build_agent(algorithm, state_dim, device, min_bandwidth_share, nominal_band
     raise ValueError("algorithm must be one of: mat, cpsl, clustersfl, pcsfl")
 
 
-def _append_transition(agent, buffer, previous, state, edge_state, done, station_id, epoch):
+def _append_transition(agent, buffer, previous, state, edge_state, done, station_id, epoch, episode_id=0):
     if isinstance(agent, MATAgent):
         buffer.append(
             previous["state"],
@@ -217,6 +217,8 @@ def _append_transition(agent, buffer, previous, state, edge_state, done, station
             previous["available_migs"],
             station_id,
             previous["epoch"],
+            trajectory_id=(int(episode_id), int(station_id)),
+            policy_version=previous["policy_version"],
         )
     elif isinstance(agent, PCSFLAgent):
         agent.observe(
@@ -242,9 +244,18 @@ def run_scenario_a(
     create_plots=True,
     run_name=None,
     trace=None,
+    mat_agent=None,
+    trajectory_buffer=None,
+    mat_training_mode="online",
+    episode_id=0,
+    export_results=True,
 ):
     """Run one controller against a shared exogenous Scenario-A trace."""
     algorithm = algorithm.lower()
+    if mat_training_mode not in {"online", "collect"}:
+        raise ValueError("mat_training_mode must be online or collect")
+    if mat_agent is not None and algorithm != "mat":
+        raise ValueError("mat_agent can only be supplied for algorithm=mat")
     if not 1 <= total_epochs <= 150:
         raise ValueError("total_epochs must be in [1, 150]")
     if min(batch_size, local_steps, ppo_update_interval, fedavg_interval, evaluation_batches) < 1:
@@ -276,12 +287,15 @@ def run_scenario_a(
     }
     _warm_up_models(models, execution_device, batch_size)
     iterators = {station_id: {"batch_size": batch_size} for station_id in calculators}
-    algorithm_name, agent = _build_agent(
-        algorithm, 2 + provider.num_classes, execution_device, min_bandwidth_share,
-        nominal_bandwidth_hz=calculators[1].base_bandwidth,
-    )
+    if mat_agent is None:
+        algorithm_name, agent = _build_agent(
+            algorithm, 2 + provider.num_classes, execution_device, min_bandwidth_share,
+            nominal_bandwidth_hz=calculators[1].base_bandwidth,
+        )
+    else:
+        algorithm_name, agent = "MAT-RL", mat_agent
     reward_config = MATRewardConfig()
-    buffer = MATTrajectoryBuffer()
+    buffer = trajectory_buffer if trajectory_buffer is not None else MATTrajectoryBuffer()
     pending = {}
     logger = SimulationLogger(log_dir=log_dir, run_name=run_name or f"scenario_a_{algorithm}_seed_{seed}")
     logger.set_metadata(
@@ -296,11 +310,6 @@ def run_scenario_a(
         reward_delay_weight=reward_config.delay_weight,
         reward_delay_reference_seconds=reward_config.delay_reference_seconds,
         reward_cluster_capacity_enabled=reward_config.cluster_size_limit is not None,
-        ppo_value_clip_ratio=getattr(agent, "value_clip_ratio", None),
-        ppo_max_grad_norm=getattr(agent, "max_grad_norm", None),
-        ppo_huber_delta=getattr(agent, "huber_delta", None),
-        ppo_advantage_normalization="station-local" if algorithm == "mat" else None,
-        ppo_value_normalization="station-local-affine-loss" if algorithm == "mat" else None,
         fedavg_interval=fedavg_interval, seed=seed, device=str(execution_device), trace_id=trace.trace_id,
     )
 
@@ -311,7 +320,7 @@ def run_scenario_a(
             edge_state = np.asarray([available_migs, bandwidth], dtype=np.float32)
             previous = pending.pop(station_id, None)
             if previous is not None:
-                _append_transition(agent, buffer, previous, state, edge_state, False, station_id, epoch)
+                _append_transition(agent, buffer, previous, state, edge_state, False, station_id, epoch, episode_id)
 
             action, policy_info = _act(
                 agent, state, available_migs, edge_state, deterministic=False, client_ids=client_ids
@@ -337,6 +346,7 @@ def run_scenario_a(
                 pending[station_id] = {
                     "state": state, "edge_state": edge_state, "action": action, "reward": reward,
                     "policy_info": policy_info, "available_migs": available_migs, "epoch": epoch,
+                    "policy_version": agent.policy_version,
                 }
             logger.log_metrics(
                 algorithm_name,
@@ -360,7 +370,7 @@ def run_scenario_a(
             test_accuracy = _evaluate_global_model(models[1], provider, execution_device, evaluation_batches)
             for row in logger.records[algorithm_name][-3:]:
                 row["test_accuracy"] = test_accuracy
-        if algorithm == "mat" and not is_warmup and len(buffer) >= ppo_update_interval:
+        if algorithm == "mat" and mat_training_mode == "online" and not is_warmup and len(buffer) >= ppo_update_interval:
             diagnostics = _flush_ppo(agent, buffer)
             for row in logger.records[algorithm_name][-3:]:
                 row.update({f"ppo_{key}": value for key, value in diagnostics.items()})
@@ -375,18 +385,20 @@ def run_scenario_a(
             True,
             station_id,
             total_epochs,
+            episode_id,
         )
-    if algorithm == "mat":
+    if algorithm == "mat" and mat_training_mode == "online":
         diagnostics = _flush_ppo(agent, buffer)
         if diagnostics:
             for row in logger.records[algorithm_name][-3:]:
                 row.update({f"ppo_{key}": value for key, value in diagnostics.items()})
-    csv_paths = logger.export_to_csv()
-    json_path = logger.export_to_json()
-    plot_paths = logger.plot_scenario_a(algorithm_name, warmup_epochs=warmup_epochs) if create_plots else []
+    csv_paths = logger.export_to_csv() if export_results else []
+    json_path = logger.export_to_json() if export_results else None
+    plot_paths = logger.plot_scenario_a(algorithm_name, warmup_epochs=warmup_epochs) if create_plots and export_results else []
     return {
         "logger": logger, "csv_paths": csv_paths, "json_path": json_path, "plot_paths": plot_paths,
-        "device": str(execution_device), "trace_id": trace.trace_id,
+        "device": str(execution_device), "trace_id": trace.trace_id, "agent": agent,
+        "trajectory_buffer": buffer,
     }
 
 
@@ -428,7 +440,7 @@ def main():
         fedavg_interval=args.fedavg_interval, evaluation_batches=args.evaluation_batches,
         device=args.device, create_plots=not args.no_plots, run_name=args.run_name,
     )
-    print(json.dumps({key: value for key, value in result.items() if key != "logger"}, indent=2))
+    print(json.dumps({key: value for key, value in result.items() if key not in {"logger", "agent", "trajectory_buffer"}}, indent=2))
 
 
 if __name__ == "__main__":
