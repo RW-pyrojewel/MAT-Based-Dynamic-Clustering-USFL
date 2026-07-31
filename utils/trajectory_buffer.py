@@ -27,7 +27,8 @@ class MATTrajectoryBuffer:
     _ACTION_KEYS = {"cluster", "l1", "l2", "bw"}
     _POLICY_KEYS = {
         "decision_order", "cluster_log_probs", "bandwidth_log_probs", "bandwidth_mask",
-        "split_log_probs", "split_mask", "value", "device_entropy", "split_entropy",
+        "split_log_probs", "split_mask", "value", "device_entropy", "cluster_entropy",
+        "bandwidth_entropy", "bandwidth_latent_means", "split_entropy",
     }
 
     def __init__(self):
@@ -54,7 +55,10 @@ class MATTrajectoryBuffer:
             raise ValueError("decision_order must have shape (N,)")
         if sorted(copied["decision_order"].tolist()) != list(range(client_count)):
             raise ValueError("decision_order must be a permutation of active clients")
-        for key in ("cluster_log_probs", "bandwidth_log_probs", "bandwidth_mask", "device_entropy"):
+        for key in (
+            "cluster_log_probs", "bandwidth_log_probs", "bandwidth_mask", "device_entropy",
+            "cluster_entropy", "bandwidth_entropy", "bandwidth_latent_means",
+        ):
             if copied[key].shape != (client_count,):
                 raise ValueError(f"{key} must have shape (N,)")
         for key in ("split_log_probs", "split_mask", "split_entropy"):

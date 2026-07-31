@@ -53,8 +53,10 @@ class CausalDeviceDecoder(nn.Module):
         self.output_norm = nn.LayerNorm(hidden_dim)
         self.cluster_head = nn.Linear(hidden_dim, num_migs)
         self.bandwidth_mean_head = nn.Linear(hidden_dim, 1)
+        self.bandwidth_channel_head = nn.Linear(1, 1, bias=False)
         nn.init.zeros_(self.bandwidth_mean_head.weight)
         nn.init.zeros_(self.bandwidth_mean_head.bias)
+        nn.init.zeros_(self.bandwidth_channel_head.weight)
         self.bandwidth_log_std = nn.Parameter(torch.tensor(float(initial_bandwidth_log_std)))
 
     @staticmethod
@@ -83,8 +85,11 @@ class CausalDeviceDecoder(nn.Module):
         valid = torch.arange(self.num_migs, device=features.device) < int(available_migs)
         return Categorical(logits=logits.masked_fill(~valid, -torch.inf))
 
-    def _bandwidth_dist(self, features):
-        return Normal(self.bandwidth_mean_head(features).squeeze(-1), self.bandwidth_log_std.exp().clamp(1e-3, 1.0))
+    def _bandwidth_dist(self, features, channel_features=None):
+        mean = self.bandwidth_mean_head(features).squeeze(-1)
+        if channel_features is not None:
+            mean = mean + self.bandwidth_channel_head(channel_features).squeeze(-1)
+        return Normal(mean, self.bandwidth_log_std.exp().clamp(1e-3, 1.0))
 
     def _allocation_parameters(self, remaining, remaining_clients):
         center = remaining / float(remaining_clients)
@@ -108,15 +113,19 @@ class CausalDeviceDecoder(nn.Module):
         jacobian = half_width.clamp_min(cls._EPS) * (1.0 - normalized.square()).clamp_min(cls._EPS)
         return distribution.log_prob(latent) - torch.log(jacobian)
 
-    def act(self, ordered_states, available_migs, deterministic=False):
+    def act(self, ordered_states, available_migs, deterministic=False, channel_features=None, return_diagnostics=False):
         batch_size, client_count, _ = ordered_states.shape
+        if channel_features is not None and channel_features.shape != (batch_size, client_count, 1):
+            raise ValueError("channel_features must have shape (B, N, 1)")
         if client_count * self.min_bandwidth_share >= 1.0:
             raise ValueError("minimum bandwidth share is infeasible for the active client count")
         clusters = torch.zeros((batch_size, client_count), dtype=torch.long, device=ordered_states.device)
         bandwidths = ordered_states.new_zeros((batch_size, client_count))
         cluster_log_probs = ordered_states.new_zeros((batch_size, client_count))
         bandwidth_log_probs = ordered_states.new_zeros((batch_size, client_count))
-        entropies = ordered_states.new_zeros((batch_size, client_count))
+        cluster_entropies = ordered_states.new_zeros((batch_size, client_count))
+        bandwidth_entropies = ordered_states.new_zeros((batch_size, client_count))
+        bandwidth_means = ordered_states.new_zeros((batch_size, client_count))
         remaining = ordered_states.new_ones(batch_size)
         for index in range(client_count):
             decoded = self._decode_prefix(ordered_states, clusters, bandwidths)
@@ -130,7 +139,8 @@ class CausalDeviceDecoder(nn.Module):
                 bandwidth_entropy = remaining.new_zeros(remaining.shape)
             else:
                 center, half_width = self._allocation_parameters(remaining, remaining_clients)
-                bandwidth_dist = self._bandwidth_dist(features)
+                current_channel = None if channel_features is None else channel_features[:, index]
+                bandwidth_dist = self._bandwidth_dist(features, current_channel)
                 latent = bandwidth_dist.mean if deterministic else bandwidth_dist.rsample()
                 bandwidth = self._transform_bandwidth(latent, center, half_width)
                 bandwidth_log_prob = self._bandwidth_log_prob(bandwidth_dist, bandwidth, center, half_width)
@@ -139,18 +149,27 @@ class CausalDeviceDecoder(nn.Module):
             bandwidths[:, index] = bandwidth
             cluster_log_probs[:, index] = cluster_dist.log_prob(cluster)
             bandwidth_log_probs[:, index] = bandwidth_log_prob
-            entropies[:, index] = cluster_dist.entropy() + bandwidth_entropy
+            cluster_entropies[:, index] = cluster_dist.entropy()
+            bandwidth_entropies[:, index] = bandwidth_entropy
+            if remaining_clients > 1:
+                bandwidth_means[:, index] = bandwidth_dist.mean
             remaining = (remaining - bandwidth).clamp_min(0.0)
-        return clusters, bandwidths, cluster_log_probs, bandwidth_log_probs, entropies
+        device_entropies = cluster_entropies + bandwidth_entropies
+        base = (clusters, bandwidths, cluster_log_probs, bandwidth_log_probs, device_entropies)
+        return base + (bandwidth_means, cluster_entropies, bandwidth_entropies) if return_diagnostics else base
 
-    def evaluate_actions(self, ordered_states, clusters, bandwidths, available_migs):
+    def evaluate_actions(self, ordered_states, clusters, bandwidths, available_migs, channel_features=None, return_diagnostics=False):
         batch_size, client_count, _ = ordered_states.shape
+        if channel_features is not None and channel_features.shape != (batch_size, client_count, 1):
+            raise ValueError("channel_features must have shape (B, N, 1)")
         if clusters.shape != (batch_size, client_count) or bandwidths.shape != (batch_size, client_count):
             raise ValueError("clusters and bandwidths must match ordered_states")
         decoded = self._decode_prefix(ordered_states, clusters, bandwidths)
         cluster_log_probs = ordered_states.new_zeros((batch_size, client_count))
         bandwidth_log_probs = ordered_states.new_zeros((batch_size, client_count))
-        entropies = ordered_states.new_zeros((batch_size, client_count))
+        cluster_entropies = ordered_states.new_zeros((batch_size, client_count))
+        bandwidth_entropies = ordered_states.new_zeros((batch_size, client_count))
+        bandwidth_means = ordered_states.new_zeros((batch_size, client_count))
         remaining = ordered_states.new_ones(batch_size)
         for index in range(client_count):
             features = decoded[:, index]
@@ -168,14 +187,20 @@ class CausalDeviceDecoder(nn.Module):
                 lower, upper = center - half_width, center + half_width
                 if torch.any(bandwidth < lower - 1e-5) or torch.any(bandwidth > upper + 1e-5):
                     raise ValueError("bandwidth allocation is outside its feasible interval")
-                bandwidth_dist = self._bandwidth_dist(features)
+                current_channel = None if channel_features is None else channel_features[:, index]
+                bandwidth_dist = self._bandwidth_dist(features, current_channel)
                 bandwidth_log_prob = self._bandwidth_log_prob(bandwidth_dist, bandwidth, center, half_width)
                 bandwidth_entropy = -bandwidth_log_prob
             cluster_log_probs[:, index] = cluster_dist.log_prob(cluster)
             bandwidth_log_probs[:, index] = bandwidth_log_prob
-            entropies[:, index] = cluster_dist.entropy() + bandwidth_entropy
+            cluster_entropies[:, index] = cluster_dist.entropy()
+            bandwidth_entropies[:, index] = bandwidth_entropy
+            if remaining_clients > 1:
+                bandwidth_means[:, index] = bandwidth_dist.mean
             remaining = (remaining - bandwidth).clamp_min(0.0)
-        return cluster_log_probs, bandwidth_log_probs, entropies
+        device_entropies = cluster_entropies + bandwidth_entropies
+        base = (cluster_log_probs, bandwidth_log_probs, device_entropies)
+        return base + (bandwidth_means, cluster_entropies, bandwidth_entropies) if return_diagnostics else base
 
 
 class ClusterSplitHead(nn.Module):

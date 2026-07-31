@@ -18,6 +18,7 @@ from scenario_a_trace import build_scenario_a_trace
 from utils.logger import SimulationLogger
 from utils.mat_reward import MATRewardConfig, compute_mat_reward
 from utils.trajectory_buffer import MATTrajectoryBuffer
+from utils.channel_diagnostics import channel_bandwidth_metrics, required_airtime, spearman_correlation
 
 
 def _next_batch(provider, iterators, client_id, batch_size):
@@ -64,6 +65,39 @@ def _bandwidth_diagnostics(weights, minimum_share):
         "bandwidth_floor_hit_rate": float(np.mean(np.isclose(weights, minimum_share, atol=1e-4))),
     }
 
+
+def _physical_channel_diagnostics(agent, state, edge_state, action, policy_info, available_migs,
+                                  payload_bytes, bandwidth_hz, minimum_share):
+    metrics = channel_bandwidth_metrics(
+        state[:, 0], payload_bytes, action["bw"], bandwidth_hz, minimum_share,
+    )
+    counterfactual_rho = 0.0
+    latent_means = np.zeros(len(state), dtype=np.float64)
+    if isinstance(agent, MATAgent):
+        latent_means = agent.evaluate_bandwidth_prefix_means(
+            state, edge_state, action, available_migs, policy_info["decision_order"],
+        )
+        counterfactual_state = np.asarray(state).copy()
+        counterfactual_state[:, 0] = np.roll(counterfactual_state[:, 0], 1)
+        changed_means = agent.evaluate_bandwidth_prefix_means(
+            counterfactual_state, edge_state, action, available_migs, policy_info["decision_order"],
+        )
+        original_airtime = required_airtime(payload_bytes, state[:, 0])
+        changed_airtime = required_airtime(payload_bytes, counterfactual_state[:, 0])
+        counterfactual_rho = spearman_correlation(changed_airtime - original_airtime,
+                                                  changed_means - latent_means)
+    scalars = {key: float(value) for key, value in metrics.items() if np.isscalar(value)}
+    scalars["channel_permutation_delta_spearman"] = float(counterfactual_rho)
+    scalars["bandwidth_latent_mean"] = float(np.mean(latent_means))
+    oracle = np.asarray(metrics["oracle_bandwidth"], dtype=np.float64)
+    airtimes = np.asarray(metrics["required_airtimes"], dtype=np.float64)
+    clients = [{
+        "client_index": int(index), "channel_gain": float(state[index, 0]),
+        "payload_bytes": float(payload_bytes[index]), "required_airtime": float(airtimes[index]),
+        "bandwidth_share": float(action["bw"][index]), "oracle_bandwidth_share": float(oracle[index]),
+        "bandwidth_latent_mean": float(latent_means[index]),
+    } for index in range(len(state))]
+    return scalars, clients
 
 def _run_usfl_round(model, optimizer, provider, iterators, client_ids, action, device, local_steps):
     """Execute actual U-shaped split training for several local mini-batches."""
@@ -249,6 +283,8 @@ def run_scenario_a(
     mat_training_mode="online",
     episode_id=0,
     export_results=True,
+    mat_deterministic=False,
+    client_diagnostics_path=None,
 ):
     """Run one controller against a shared exogenous Scenario-A trace."""
     algorithm = algorithm.lower()
@@ -297,6 +333,7 @@ def run_scenario_a(
     reward_config = MATRewardConfig()
     buffer = trajectory_buffer if trajectory_buffer is not None else MATTrajectoryBuffer()
     pending = {}
+    client_diagnostics = []
     logger = SimulationLogger(log_dir=log_dir, run_name=run_name or f"scenario_a_{algorithm}_seed_{seed}")
     logger.set_metadata(
         scenario="A", algorithm=algorithm_name, dataset="CIFAR-100", num_stations=3, clients_per_station=10,
@@ -323,7 +360,7 @@ def run_scenario_a(
                 _append_transition(agent, buffer, previous, state, edge_state, False, station_id, epoch, episode_id)
 
             action, policy_info = _act(
-                agent, state, available_migs, edge_state, deterministic=False, client_ids=client_ids
+                agent, state, available_migs, edge_state, deterministic=(mat_deterministic and algorithm == "mat"), client_ids=client_ids
             )
             training = _run_usfl_round(
                 models[station_id], optimizers[station_id], provider, iterators[station_id], client_ids,
@@ -333,6 +370,16 @@ def run_scenario_a(
                 action["cluster"], action["bw"], training["smashed_sizes"], state[:, 0],
                 available_migs=available_migs, bandwidth_hz=bandwidth,
             )
+            physical_metrics, physical_clients = _physical_channel_diagnostics(
+                agent, state, edge_state, action, policy_info, available_migs,
+                training["smashed_sizes"], bandwidth, min_bandwidth_share,
+            )
+            if client_diagnostics_path is not None:
+                for client, client_id in zip(physical_clients, client_ids):
+                    client_diagnostics.append({
+                        "seed": int(seed), "episode_id": int(episode_id), "epoch": int(epoch),
+                        "station_id": int(station_id), "client_id": int(client_id), **client,
+                    })
             total_delay = max(
                 tx_delays[mig_id] + training["cluster_compute_delays"].get(mig_id, 0.0)
                 for mig_id in range(available_migs)
@@ -356,7 +403,7 @@ def run_scenario_a(
                 virtual_cluster_count=int(len(np.unique(action.get("virtual_cluster", action["cluster"])))),
                 bandwidth_allocation_sum=float(action["bw"].sum()), bandwidth_unused=float(1.0 - action["bw"].sum()),
                 min_bandwidth_share=float(action["bw"].min()), max_bandwidth_share=float(action["bw"].max()),
-                **_bandwidth_diagnostics(action["bw"], min_bandwidth_share),
+                **_bandwidth_diagnostics(action["bw"], min_bandwidth_share), **physical_metrics,
                 mean_l1=float(action["l1"].mean()), mean_l2=float(action["l2"].mean()),
                 smashed_data_bytes_total=float(training["smashed_sizes"].sum()),
                 smashed_data_bytes_per_client_mean=float(training["smashed_sizes"].mean()),
@@ -392,13 +439,19 @@ def run_scenario_a(
         if diagnostics:
             for row in logger.records[algorithm_name][-3:]:
                 row.update({f"ppo_{key}": value for key, value in diagnostics.items()})
+    if client_diagnostics_path is not None:
+        sidecar_path = str(client_diagnostics_path)
+        with open(sidecar_path, "w", encoding="utf-8") as handle:
+            json.dump(client_diagnostics, handle, indent=2, allow_nan=False)
+    else:
+        sidecar_path = None
     csv_paths = logger.export_to_csv() if export_results else []
     json_path = logger.export_to_json() if export_results else None
     plot_paths = logger.plot_scenario_a(algorithm_name, warmup_epochs=warmup_epochs) if create_plots and export_results else []
     return {
         "logger": logger, "csv_paths": csv_paths, "json_path": json_path, "plot_paths": plot_paths,
         "device": str(execution_device), "trace_id": trace.trace_id, "agent": agent,
-        "trajectory_buffer": buffer,
+        "trajectory_buffer": buffer, "client_diagnostics_path": sidecar_path,
     }
 
 
