@@ -1,4 +1,4 @@
-"""Staged Scenario-A training and frozen validation for channel-aware MAT."""
+﻿"""Staged Scenario-A training and frozen validation for channel-aware MAT."""
 import argparse
 import json
 from datetime import datetime
@@ -25,7 +25,7 @@ VALIDATION_SEEDS = (7, 17, 29)
 def _load_probe_report(path):
     with open(path, encoding="utf-8") as handle:
         report = json.load(handle)
-    required = {"legacy", "candidate", "starvation", "passed"}
+    required = {"legacy", "candidate", "passed"}
     if not required.issubset(report):
         raise ValueError("probe report has an incompatible schema")
     return report
@@ -239,3 +239,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

@@ -1,4 +1,4 @@
-"""Shared-encoder MAT PPO with a frozen target critic and full-batch-equivalent updates."""
+﻿"""Shared-encoder MAT PPO with a frozen target critic and full-batch-equivalent updates."""
 from copy import deepcopy
 
 import numpy as np
@@ -20,6 +20,7 @@ class MATAgent(BaseAgent):
                  target_kl=0.03, channel_conditioning="explicit", component_balanced_ppo=False,
                  compute_reference=2.5, snr_scale=10.0, bandwidth_policy="joint_dirichlet",
                  dirichlet_alpha_floor=1.0, dirichlet_alpha_init=22.5,
+                 bandwidth_physical_response_scale=10.0,
                  bandwidth_context_channel_reference=1.0, device="cpu"):
         super().__init__(agent_name="MAT-RL Agent (Proposed)")
         if num_cut_layers < 2 or nominal_bandwidth_hz <= 0:
@@ -43,6 +44,7 @@ class MATAgent(BaseAgent):
         self.component_balanced_ppo = bool(component_balanced_ppo or bandwidth_policy == "joint_dirichlet")
         self.dirichlet_alpha_floor = float(dirichlet_alpha_floor)
         self.dirichlet_alpha_init = float(dirichlet_alpha_init)
+        self.bandwidth_physical_response_scale = float(bandwidth_physical_response_scale)
         self.bandwidth_context_channel_reference = float(bandwidth_context_channel_reference)
         self.compute_reference, self.snr_scale = float(compute_reference), float(snr_scale)
         self.state_dim, self.hidden_dim, self.edge_state_dim = int(state_dim), int(hidden_dim), int(edge_state_dim)
@@ -50,7 +52,8 @@ class MATAgent(BaseAgent):
         self.encoder = HeterogeneousEncoder(state_dim, hidden_dim, edge_state_dim=edge_state_dim).to(self.device)
         self.device_decoder = CausalDeviceDecoder(hidden_dim, num_migs, min_bandwidth_share=self.min_bandwidth_share).to(self.device)
         self.bandwidth_head = JointDirichletBandwidthHead(
-            hidden_dim, num_migs, self.min_bandwidth_share, self.dirichlet_alpha_floor, self.dirichlet_alpha_init
+            hidden_dim, num_migs, self.min_bandwidth_share, self.dirichlet_alpha_floor,
+            self.dirichlet_alpha_init, self.bandwidth_physical_response_scale
         ).to(self.device)
         self.split_head = ClusterSplitHead(hidden_dim, num_migs, num_cut_layers).to(self.device)
         self.value_head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Linear(hidden_dim // 2, 1)).to(self.device)
@@ -81,6 +84,7 @@ class MATAgent(BaseAgent):
             "bandwidth_policy": self.bandwidth_policy,
             "dirichlet_alpha_floor": self.dirichlet_alpha_floor,
             "dirichlet_alpha_init": self.dirichlet_alpha_init,
+            "bandwidth_physical_response_scale": self.bandwidth_physical_response_scale,
             "bandwidth_context_channel_reference": self.bandwidth_context_channel_reference,
         }
 
@@ -656,6 +660,8 @@ class MATAgent(BaseAgent):
             self.device_decoder.bandwidth_mean_head.parameters(), bandwidth_head_before)]
         result["bandwidth_mean_head_parameter_drift"] = float(np.sqrt(np.square(head_drift).sum()))
         result["bandwidth_physical_weight"] = float(self.bandwidth_head.physical_weight.detach())
+        result["bandwidth_effective_physical_coefficient"] = float(
+            self.bandwidth_head.physical_response_scale * self.bandwidth_head.physical_weight.detach())
         physical_scores = np.concatenate([np.asarray(info["bandwidth_physical_scores"]).reshape(-1)
                                           for info in data["policy_infos"]])
         context_scores = np.concatenate([np.asarray(info["bandwidth_context_scores"]).reshape(-1)
@@ -682,3 +688,4 @@ class MATAgent(BaseAgent):
         if not all(np.isfinite(float(value)) for value in result.values() if isinstance(value, (int, float, np.number))):
             raise FloatingPointError("non-finite MAT diagnostic")
         return result
+

@@ -1,4 +1,4 @@
-"""Equal-payload channel probe for MAT bandwidth credit assignment.
+﻿"""Equal-payload channel probe for MAT bandwidth credit assignment.
 
 The probe deliberately excludes split payload and compute latency.  It trains on
 wireless max-delay only, then evaluates physical bandwidth allocation metrics on
@@ -340,15 +340,71 @@ def run_probe(output_dir="logs", max_candidate_cycles=10, device="cpu"):
     return root, report
 
 
+def resume_probe(checkpoint, baseline_report, output_dir="logs", extra_cycles=5, device="cpu"):
+    """Continue a passed numerical probe from a checkpoint without replaying consumed data."""
+    with open(baseline_report, encoding="utf-8") as handle:
+        parent = json.load(handle)
+    if "legacy" not in parent:
+        raise ValueError("baseline probe report does not contain legacy metrics")
+    agent = MATAgent.load_checkpoint(checkpoint, device=device)
+    if agent.bandwidth_policy != "joint_dirichlet":
+        raise ValueError("only joint_dirichlet candidates can resume the channel probe")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    root = Path(output_dir) / f"mat_channel_probe_extension_{stamp}"
+    root.mkdir(parents=True, exist_ok=False)
+    updates, records = [], []
+    summary, gates, regret_reduction = None, {}, 0.0
+    first_cycle = agent.update_count + 1
+    for cycle in range(first_cycle, first_cycle + int(extra_cycles)):
+        np.random.seed(7000 + cycle)
+        torch.manual_seed(7000 + cycle)
+        diagnostics = _collect_cycle(agent, TRAIN_SEEDS)
+        diagnostics["cycle"] = cycle
+        updates.append(diagnostics)
+        summary, records = _evaluate(agent, HOLDOUT_SEEDS)
+        gates, regret_reduction = _gates(summary, parent["legacy"], diagnostics)
+        agent.save_checkpoint(root / f"candidate_cycle_{cycle}.pt")
+        print(f"candidate cycle={cycle} gates={sum(gates.values())}/{len(gates)}", flush=True)
+        if all(gates.values()):
+            break
+    report = {
+        "schema_version": 2,
+        "parent_checkpoint": str(checkpoint),
+        "parent_report": str(baseline_report),
+        "legacy": parent["legacy"],
+        "candidate": summary,
+        "candidate_updates": updates,
+        "legacy_regret_reduction": regret_reduction,
+        "gates": gates,
+        "passed": bool(gates and all(gates.values())),
+    }
+    (root / "probe_report.json").write_text(
+        json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
+    _write_csv(root / "candidate_holdout.csv", records)
+    _write_csv(root / "candidate_updates.csv", updates)
+    (root / "candidate_holdout_clients.json").write_text(
+        json.dumps(records, indent=2, allow_nan=False), encoding="utf-8")
+    return root, report
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", default="logs")
     parser.add_argument("--max-candidate-cycles", type=int, default=10)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--resume-checkpoint", default=None)
+    parser.add_argument("--baseline-report", default=None)
+    parser.add_argument("--extra-cycles", type=int, default=5)
     args = parser.parse_args()
-    root, report = run_probe(args.output_dir, args.max_candidate_cycles, args.device)
+    if args.resume_checkpoint:
+        if not args.baseline_report:
+            parser.error("--baseline-report is required with --resume-checkpoint")
+        root, report = resume_probe(
+            args.resume_checkpoint, args.baseline_report, args.output_dir, args.extra_cycles, args.device)
+    else:
+        root, report = run_probe(args.output_dir, args.max_candidate_cycles, args.device)
     print(json.dumps({"output_dir": str(root), **report}, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":
     main()
+

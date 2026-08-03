@@ -232,13 +232,14 @@ class JointDirichletBandwidthHead(nn.Module):
     """Permutation-equivariant simplex policy with an isolated physical CSI path."""
 
     def __init__(self, hidden_dim, num_migs, min_bandwidth_share=0.01,
-                 alpha_floor=1.0, alpha_init=22.5):
+                 alpha_floor=1.0, alpha_init=22.5, physical_response_scale=10.0):
         super().__init__()
-        if alpha_floor <= 0.0 or alpha_init <= alpha_floor:
+        if alpha_floor <= 0.0 or alpha_init <= alpha_floor or physical_response_scale <= 0.0:
             raise ValueError("Dirichlet alpha_init must exceed a positive alpha_floor")
         self.min_bandwidth_share = float(min_bandwidth_share)
         self.alpha_floor = float(alpha_floor)
         self.alpha_init = float(alpha_init)
+        self.physical_response_scale = float(physical_response_scale)
         self.context_head = nn.Linear(hidden_dim, 1)
         self.cluster_embedding = nn.Embedding(num_migs, hidden_dim)
         self.cluster_head = nn.Linear(hidden_dim, 1, bias=False)
@@ -260,7 +261,7 @@ class JointDirichletBandwidthHead(nn.Module):
         context_score = self.context_head(context).squeeze(-1)
         cluster_score = self.cluster_head(self.cluster_embedding(clusters.long())).squeeze(-1)
         physical_feature = self.physical_feature(normalized_channel)
-        physical_score = self.physical_weight * physical_feature
+        physical_score = self.physical_response_scale * self.physical_weight * physical_feature
         score = context_score + cluster_score + physical_score
         # Separate the allocation mean from exploration concentration.  A symmetric
         # score still yields alpha_init per client, while score differences act
@@ -389,4 +390,5 @@ class ClusterSplitHead(nn.Module):
 
 
 AutoregressiveDecoder = CausalDeviceDecoder
+
 
