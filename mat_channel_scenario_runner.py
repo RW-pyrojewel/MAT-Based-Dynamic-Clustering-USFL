@@ -115,7 +115,7 @@ def run_channel_scenario(
     root.mkdir(parents=True, exist_ok=False)
     if not probe_report["passed"]:
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "blocked_by_isolated_probe",
             "probe_report_path": str(probe_report_path),
             "reason": "Scenario A training is not permitted until all isolated channel gates pass.",
@@ -128,7 +128,7 @@ def run_channel_scenario(
     agent = MATAgent(
         state_dim=102, hidden_dim=128, num_migs=7, num_cut_layers=7,
         ppo_epochs=10, minibatch_size=256, channel_conditioning="explicit",
-        component_balanced_ppo=bool(probe_report["starvation"]["triggered"]),
+        bandwidth_policy="joint_dirichlet", component_balanced_ppo=True,
         device=execution_device,
     )
     cycles = []
@@ -200,7 +200,7 @@ def run_channel_scenario(
         for cycle in cycles
     )
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "completed",
         "probe_report_path": str(probe_report_path),
         "cycles": cycles,

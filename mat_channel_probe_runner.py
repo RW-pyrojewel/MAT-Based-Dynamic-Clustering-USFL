@@ -86,7 +86,8 @@ def _collect_cycle(agent, seeds):
                 )
     kwargs = buffer.as_ppo_kwargs()
     diagnostics = agent.update_policy(
-        kwargs.pop("rewards"), kwargs.pop("next_states"), kwargs.pop("dones"), **kwargs
+        kwargs.pop("rewards"), kwargs.pop("next_states"), kwargs.pop("dones"),
+        actor_components=("bandwidth",), one_step_advantage=True, **kwargs
     )
     buffer.clear()
     return diagnostics
@@ -126,6 +127,10 @@ def _evaluate(agent, seeds):
                     np.full(CLIENTS, PAYLOAD_BYTES), counterfactual_state[:, 0]
                 ) - required_airtime(np.full(CLIENTS, PAYLOAD_BYTES), state[:, 0])
                 counterfactual_rho = spearman_correlation(delta_required, after - before)
+                reverse_means = agent.evaluate_bandwidth_prefix_means(
+                    state, edge, action, 3, info["decision_order"][::-1].copy()
+                )
+                order_invariance = float(np.max(np.abs(reverse_means - before)))
                 correlations.append(metrics["required_airtime_bandwidth_spearman"])
                 counterfactual_correlations.append(counterfactual_rho)
                 equal_delays.append(metrics["equal_bandwidth_tx_delay_ms"])
@@ -143,6 +148,18 @@ def _evaluate(agent, seeds):
                         },
                         "counterfactual_delta_spearman": counterfactual_rho,
                         "bandwidth_latent_mean": float(np.mean(info["bandwidth_latent_means"])),
+                        "decision_order_invariance_max_abs": order_invariance,
+                        "bandwidth_alpha_mean": float(np.mean(info["bandwidth_alpha"])),
+                        "bandwidth_alpha_min": float(np.min(info["bandwidth_alpha"])),
+                        "bandwidth_alpha_max": float(np.max(info["bandwidth_alpha"])),
+                        "bandwidth_context_score_std": float(np.std(info["bandwidth_context_scores"])),
+                        "bandwidth_physical_score_std": float(np.std(info["bandwidth_physical_scores"])),
+                        "clients": [{"channel_gain": float(state[i, 0]),
+                                     "required_airtime": float(required_airtime(np.full(CLIENTS, PAYLOAD_BYTES), state[:, 0])[i]),
+                                     "bandwidth": float(action["bw"][i]), "alpha": float(info["bandwidth_alpha"][i]),
+                                     "context_score": float(info["bandwidth_context_scores"][i]),
+                                     "physical_score": float(info["bandwidth_physical_scores"][i])}
+                                    for i in range(CLIENTS)],
                     }
                 )
         equal_delay = float(np.mean(equal_delays))
@@ -180,6 +197,8 @@ def _evaluate(agent, seeds):
             np.mean([item["oracle_gap_closure"] for item in seed_summaries])
         ),
         "oracle_regret_ms": float(np.mean([item["oracle_regret_ms"] for item in seed_summaries])),
+        "decision_order_invariance_max_abs": float(max(
+            [row["decision_order_invariance_max_abs"] for row in records], default=0.0)),
     }
     return summary, records
 
@@ -208,6 +227,7 @@ def _gates(candidate, legacy, diagnostics):
         "equal_delay_improvement": candidate["equal_delay_improvement"] >= 0.10,
         "oracle_gap_closure": candidate["oracle_gap_closure"] >= 0.30,
         "legacy_regret_reduction": regret_reduction >= 0.25,
+        "decision_order_invariance": candidate["decision_order_invariance_max_abs"] <= 1e-6,
         "numerical_stability": _numerically_stable(diagnostics),
     }
     return gates, float(regret_reduction)
@@ -217,9 +237,10 @@ def _write_csv(path, rows):
     if not rows:
         return
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        scalar_rows = [{key: value for key, value in row.items() if np.isscalar(value)} for row in rows]
+        writer = csv.DictWriter(handle, fieldnames=list(scalar_rows[0]))
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(scalar_rows)
 
 
 def run_probe(output_dir="logs", max_candidate_cycles=10, device="cpu"):
@@ -230,7 +251,7 @@ def run_probe(output_dir="logs", max_candidate_cycles=10, device="cpu"):
     torch.manual_seed(20260731)
     legacy = MATAgent(
         state_dim=6, hidden_dim=32, ppo_epochs=10, minibatch_size=256,
-        channel_conditioning="legacy", device=device,
+        channel_conditioning="legacy", bandwidth_policy="sequential_gaussian", device=device,
     )
     legacy_updates = []
     initial_legacy_summary, initial_legacy_records = _evaluate(legacy, HOLDOUT_SEEDS)
@@ -262,7 +283,8 @@ def run_probe(output_dir="logs", max_candidate_cycles=10, device="cpu"):
     torch.manual_seed(20260731)
     candidate = MATAgent(
         state_dim=6, hidden_dim=32, ppo_epochs=10, minibatch_size=256,
-        channel_conditioning="explicit", component_balanced_ppo=starvation, device=device,
+        channel_conditioning="explicit", bandwidth_policy="joint_dirichlet",
+        component_balanced_ppo=True, device=device,
     )
     candidate_updates, candidate_records = [], []
     candidate_summary = None
@@ -281,7 +303,7 @@ def run_probe(output_dir="logs", max_candidate_cycles=10, device="cpu"):
             break
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "configuration": {
             "train_seeds": TRAIN_SEEDS,
             "holdout_seeds": HOLDOUT_SEEDS,
@@ -312,6 +334,9 @@ def run_probe(output_dir="logs", max_candidate_cycles=10, device="cpu"):
     _write_csv(root / "candidate_holdout.csv", candidate_records)
     _write_csv(root / "legacy_updates.csv", legacy_updates)
     _write_csv(root / "candidate_updates.csv", candidate_updates)
+    (root / "candidate_holdout_clients.json").write_text(
+        json.dumps(candidate_records, indent=2, allow_nan=False), encoding="utf-8"
+    )
     return root, report
 
 

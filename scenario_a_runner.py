@@ -89,6 +89,11 @@ def _physical_channel_diagnostics(agent, state, edge_state, action, policy_info,
     scalars = {key: float(value) for key, value in metrics.items() if np.isscalar(value)}
     scalars["channel_permutation_delta_spearman"] = float(counterfactual_rho)
     scalars["bandwidth_latent_mean"] = float(np.mean(latent_means))
+    scalars["bandwidth_alpha_mean"] = float(np.mean(policy_info.get("bandwidth_alpha", 0.0)))
+    scalars["bandwidth_alpha_min"] = float(np.min(policy_info.get("bandwidth_alpha", [0.0])))
+    scalars["bandwidth_alpha_max"] = float(np.max(policy_info.get("bandwidth_alpha", [0.0])))
+    scalars["bandwidth_context_score_std"] = float(np.std(policy_info.get("bandwidth_context_scores", 0.0)))
+    scalars["bandwidth_physical_score_std"] = float(np.std(policy_info.get("bandwidth_physical_scores", 0.0)))
     oracle = np.asarray(metrics["oracle_bandwidth"], dtype=np.float64)
     airtimes = np.asarray(metrics["required_airtimes"], dtype=np.float64)
     clients = [{
@@ -96,6 +101,9 @@ def _physical_channel_diagnostics(agent, state, edge_state, action, policy_info,
         "payload_bytes": float(payload_bytes[index]), "required_airtime": float(airtimes[index]),
         "bandwidth_share": float(action["bw"][index]), "oracle_bandwidth_share": float(oracle[index]),
         "bandwidth_latent_mean": float(latent_means[index]),
+        "bandwidth_alpha": float(np.asarray(policy_info.get("bandwidth_alpha", np.zeros(len(state))))[index]),
+        "bandwidth_context_score": float(np.asarray(policy_info.get("bandwidth_context_scores", np.zeros(len(state))))[index]),
+        "bandwidth_physical_score": float(np.asarray(policy_info.get("bandwidth_physical_scores", np.zeros(len(state))))[index]),
     } for index in range(len(state))]
     return scalars, clients
 

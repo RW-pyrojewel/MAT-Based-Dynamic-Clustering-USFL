@@ -28,7 +28,8 @@ class MATTrajectoryBuffer:
     _POLICY_KEYS = {
         "decision_order", "cluster_log_probs", "bandwidth_log_probs", "bandwidth_mask",
         "split_log_probs", "split_mask", "value", "device_entropy", "cluster_entropy",
-        "bandwidth_entropy", "bandwidth_latent_means", "split_entropy",
+        "bandwidth_entropy", "bandwidth_latent_means", "bandwidth_alpha",
+        "bandwidth_context_scores", "bandwidth_physical_scores", "bandwidth_physical_features", "split_entropy",
     }
 
     def __init__(self):
@@ -55,12 +56,17 @@ class MATTrajectoryBuffer:
             raise ValueError("decision_order must have shape (N,)")
         if sorted(copied["decision_order"].tolist()) != list(range(client_count)):
             raise ValueError("decision_order must be a permutation of active clients")
-        for key in (
-            "cluster_log_probs", "bandwidth_log_probs", "bandwidth_mask", "device_entropy",
-            "cluster_entropy", "bandwidth_entropy", "bandwidth_latent_means",
-        ):
+        for key in ("cluster_log_probs", "device_entropy", "cluster_entropy", "bandwidth_latent_means",
+                    "bandwidth_alpha", "bandwidth_context_scores", "bandwidth_physical_scores",
+                    "bandwidth_physical_features"):
             if copied[key].shape != (client_count,):
                 raise ValueError(f"{key} must have shape (N,)")
+        bandwidth_size = copied["bandwidth_log_probs"].shape
+        if bandwidth_size not in {(1,), (client_count,)}:
+            raise ValueError("bandwidth log-prob must be joint scalar or per-client")
+        for key in ("bandwidth_mask", "bandwidth_entropy"):
+            if copied[key].shape != bandwidth_size:
+                raise ValueError(f"{key} must match bandwidth_log_probs")
         for key in ("split_log_probs", "split_mask", "split_entropy"):
             if copied[key].ndim != 1 or len(copied[key]) < available_migs:
                 raise ValueError(f"{key} must cover every available MIG")

@@ -1,10 +1,10 @@
-"""Neural building blocks for the hierarchical multi-agent Transformer policy."""
+﻿"""Neural building blocks for the hierarchical multi-agent Transformer policy."""
 import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as functional
-from torch.distributions import Categorical, Normal
+from torch.distributions import Categorical, Dirichlet, Normal
 
 
 class HeterogeneousEncoder(nn.Module):
@@ -85,6 +85,31 @@ class CausalDeviceDecoder(nn.Module):
         valid = torch.arange(self.num_migs, device=features.device) < int(available_migs)
         return Categorical(logits=logits.masked_fill(~valid, -torch.inf))
 
+    def act_clusters(self, ordered_states, available_migs, deterministic=False):
+        """Generate clusters before bandwidth, conditioned only on the cluster prefix."""
+        batch_size, client_count, _ = ordered_states.shape
+        clusters = torch.zeros((batch_size, client_count), dtype=torch.long, device=ordered_states.device)
+        log_probs = ordered_states.new_zeros((batch_size, client_count))
+        entropies = ordered_states.new_zeros((batch_size, client_count))
+        empty_bandwidths = ordered_states.new_zeros((batch_size, client_count))
+        for index in range(client_count):
+            decoded = self._decode_prefix(ordered_states, clusters, empty_bandwidths)
+            distribution = self._cluster_dist(decoded[:, index], available_migs)
+            cluster = distribution.probs.argmax(-1) if deterministic else distribution.sample()
+            clusters[:, index] = cluster
+            log_probs[:, index] = distribution.log_prob(cluster)
+            entropies[:, index] = distribution.entropy()
+        return clusters, log_probs, entropies
+
+    def evaluate_clusters(self, ordered_states, clusters, available_migs):
+        empty_bandwidths = ordered_states.new_zeros(clusters.shape)
+        decoded = self._decode_prefix(ordered_states, clusters, empty_bandwidths)
+        log_probs, entropies = [], []
+        for index in range(ordered_states.shape[1]):
+            distribution = self._cluster_dist(decoded[:, index], available_migs)
+            log_probs.append(distribution.log_prob(clusters[:, index].long()))
+            entropies.append(distribution.entropy())
+        return torch.stack(log_probs, dim=1), torch.stack(entropies, dim=1)
     def _bandwidth_dist(self, features, channel_features=None):
         mean = self.bandwidth_mean_head(features).squeeze(-1)
         if channel_features is not None:
@@ -203,6 +228,86 @@ class CausalDeviceDecoder(nn.Module):
         return base + (bandwidth_means, cluster_entropies, bandwidth_entropies) if return_diagnostics else base
 
 
+class JointDirichletBandwidthHead(nn.Module):
+    """Permutation-equivariant simplex policy with an isolated physical CSI path."""
+
+    def __init__(self, hidden_dim, num_migs, min_bandwidth_share=0.01,
+                 alpha_floor=1.0, alpha_init=22.5):
+        super().__init__()
+        if alpha_floor <= 0.0 or alpha_init <= alpha_floor:
+            raise ValueError("Dirichlet alpha_init must exceed a positive alpha_floor")
+        self.min_bandwidth_share = float(min_bandwidth_share)
+        self.alpha_floor = float(alpha_floor)
+        self.alpha_init = float(alpha_init)
+        self.context_head = nn.Linear(hidden_dim, 1)
+        self.cluster_embedding = nn.Embedding(num_migs, hidden_dim)
+        self.cluster_head = nn.Linear(hidden_dim, 1, bias=False)
+        self.physical_weight = nn.Parameter(torch.zeros(()))
+        nn.init.zeros_(self.context_head.weight)
+        nn.init.zeros_(self.context_head.bias)
+        nn.init.zeros_(self.cluster_head.weight)
+        initial_softplus = self.alpha_init - self.alpha_floor
+        self.register_buffer("concentration_bias", torch.tensor(math.log(math.expm1(initial_softplus))))
+
+    @staticmethod
+    def physical_feature(normalized_channel):
+        feature = -torch.log(normalized_channel.squeeze(-1).clamp_min(1e-6)).clamp(-8.0, 8.0)
+        return feature - feature.mean(dim=1, keepdim=True)
+
+    def parameters_for(self, context, clusters, normalized_channel):
+        if context.shape[:2] != clusters.shape or normalized_channel.shape != (*clusters.shape, 1):
+            raise ValueError("bandwidth context, clusters and channel must share (B, N)")
+        context_score = self.context_head(context).squeeze(-1)
+        cluster_score = self.cluster_head(self.cluster_embedding(clusters.long())).squeeze(-1)
+        physical_feature = self.physical_feature(normalized_channel)
+        physical_score = self.physical_weight * physical_feature
+        score = context_score + cluster_score + physical_score
+        # Separate the allocation mean from exploration concentration.  A symmetric
+        # score still yields alpha_init per client, while score differences act
+        # directly on the simplex mean instead of being divided by alpha_init.
+        mean = torch.softmax(score, dim=-1)
+        excess_concentration = float(score.shape[-1]) * self.concentration_bias
+        alpha = self.alpha_floor + excess_concentration * mean
+        return alpha, context_score + cluster_score, physical_score, physical_feature
+
+    def _scale(self, client_count):
+        scale = 1.0 - float(client_count) * self.min_bandwidth_share
+        if scale <= 0.0:
+            raise ValueError("minimum bandwidth share is infeasible for the active client count")
+        return scale
+
+    def _to_bandwidth(self, simplex):
+        return self.min_bandwidth_share + self._scale(simplex.shape[-1]) * simplex
+
+    def _to_simplex(self, bandwidth):
+        simplex = (bandwidth - self.min_bandwidth_share) / self._scale(bandwidth.shape[-1])
+        if torch.any(simplex <= 0.0) or torch.any(~torch.isfinite(simplex)):
+            raise ValueError("bandwidth allocation is outside the open constrained simplex")
+        return simplex / simplex.sum(dim=-1, keepdim=True)
+
+    def _log_prob_entropy(self, distribution, simplex):
+        dimension = simplex.shape[-1] - 1
+        log_scale = math.log(self._scale(simplex.shape[-1]))
+        return (distribution.log_prob(simplex) - dimension * log_scale,
+                distribution.entropy() + dimension * log_scale)
+
+    def act(self, context, clusters, normalized_channel, deterministic=False):
+        alpha, context_score, physical_score, physical_feature = self.parameters_for(
+            context, clusters, normalized_channel)
+        distribution = Dirichlet(alpha)
+        simplex = alpha / alpha.sum(dim=-1, keepdim=True) if deterministic else distribution.rsample()
+        bandwidth = self._to_bandwidth(simplex)
+        log_prob, entropy = self._log_prob_entropy(distribution, simplex)
+        return bandwidth, log_prob, entropy, alpha, context_score, physical_score, physical_feature
+
+    def evaluate_actions(self, context, clusters, normalized_channel, bandwidth):
+        alpha, context_score, physical_score, physical_feature = self.parameters_for(
+            context, clusters, normalized_channel)
+        distribution = Dirichlet(alpha)
+        simplex = self._to_simplex(bandwidth)
+        log_prob, entropy = self._log_prob_entropy(distribution, simplex)
+        return log_prob, entropy, alpha, context_score, physical_score, physical_feature
+
 class ClusterSplitHead(nn.Module):
     """Choose one shared U-shaped split pair for each non-empty cluster."""
 
@@ -284,3 +389,4 @@ class ClusterSplitHead(nn.Module):
 
 
 AutoregressiveDecoder = CausalDeviceDecoder
+
