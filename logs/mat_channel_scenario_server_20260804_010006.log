@@ -1,0 +1,21 @@
+Traceback (most recent call last):
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/mat_channel_scenario_runner.py", line 14, in <module>
+    from scenario_a_runner import run_scenario_a
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/scenario_a_runner.py", line 13, in <module>
+    from data import CIFAR100NonIIDProvider
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/data/__init__.py", line 1, in <module>
+    from .cifar_10_provider import CIFAR10NonIIDProvider
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/data/cifar_10_provider.py", line 5, in <module>
+    from torchvision import datasets, transforms
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torchvision/__init__.py", line 10, in <module>
+    from torchvision import _meta_registrations, datasets, io, models, ops, transforms, utils  # usort:skip
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torchvision/datasets/__init__.py", line 1, in <module>
+    from ._optical_flow import FlyingChairs, FlyingThings3D, HD1K, KittiFlow, Sintel
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torchvision/datasets/_optical_flow.py", line 14, in <module>
+    from .utils import _read_pfm, verify_str_arg
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torchvision/datasets/utils.py", line 4, in <module>
+    import lzma
+  File "/home/lqs/.pyenv/versions/3.14.3/lib/python3.14/lzma.py", line 28, in <module>
+    from _lzma import *
+ModuleNotFoundError: No module named '_lzma'

@@ -1,0 +1,66 @@
+/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/transformer.py:392: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+scenario cycle=2 episode=1/8 seed=151 start
+Traceback (most recent call last):
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/mat_channel_scenario_runner.py", line 265, in <module>
+    main()
+    ~~~~^^
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/mat_channel_scenario_runner.py", line 256, in main
+    root, report = run_channel_scenario(
+                   ~~~~~~~~~~~~~~~~~~~~^
+        args.probe_report, args.data_dir, args.log_dir, args.device,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        args.epochs, 5, args.batch_size, args.local_steps, args.evaluation_batches,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        args.resume_checkpoint, args.start_cycle,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/mat_channel_scenario_runner.py", line 154, in run_channel_scenario
+    run_scenario_a(
+    ~~~~~~~~~~~~~~^
+        algorithm="mat", data_dir=data_dir, log_dir=str(root), total_epochs=total_epochs,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+        episode_id=(cycle_index - 1) * len(seeds) + episode_index,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/scenario_a_runner.py", line 332, in run_scenario_a
+    _warm_up_models(models, execution_device, batch_size)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/scenario_a_runner.py", line 181, in _warm_up_models
+    logits = model.forward_partC(model.forward_partB(model.forward_partA(sample, 0), 0, 6), 6)
+                                 ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/models/usfl_networks.py", line 41, in forward_partB
+    outputs = self.layers[layer_index](outputs)
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/container.py", line 250, in forward
+    input = module(input)
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/normalization.py", line 325, in forward
+    return F.group_norm(input, self.num_groups, self.weight, self.bias, self.eps)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/functional.py", line 2956, in group_norm
+    return torch.group_norm(
+           ~~~~~~~~~~~~~~~~^
+        input, num_groups, weight, bias, eps, torch.backends.cudnn.enabled
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+torch.AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+

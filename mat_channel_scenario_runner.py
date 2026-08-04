@@ -1,6 +1,7 @@
-﻿"""Staged Scenario-A training and frozen validation for channel-aware MAT."""
+"""Staged Scenario-A training and frozen validation for channel-aware MAT."""
 import argparse
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,11 @@ CYCLE_SEEDS = (
     (41, 53, 67, 79, 97, 113, 127, 139),
     (151, 163, 179, 191, 211, 223, 239, 251),
     (263, 277, 293, 307, 317, 331, 347, 359),
+    (367, 373, 379, 383, 389, 397, 467, 479),
+    (487, 491, 499, 503, 509, 521, 523, 541),
+    (547, 557, 563, 569, 571, 577, 587, 593),
+    (599, 601, 607, 613, 617, 619, 631, 641),
+    (643, 647, 653, 659, 661, 673, 677, 683),
 )
 VALIDATION_SEEDS = (7, 17, 29)
 
@@ -108,6 +114,8 @@ def run_channel_scenario(
     batch_size=16,
     local_steps=4,
     evaluation_batches=10,
+    resume_checkpoint=None,
+    start_cycle=1,
 ):
     probe_report = _load_probe_report(probe_report_path)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -125,17 +133,29 @@ def run_channel_scenario(
 
     execution_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(20260731)
-    agent = MATAgent(
-        state_dim=102, hidden_dim=128, num_migs=7, num_cut_layers=7,
-        ppo_epochs=10, minibatch_size=256, channel_conditioning="explicit",
-        bandwidth_policy="joint_dirichlet", component_balanced_ppo=True,
-        device=execution_device,
-    )
+    if resume_checkpoint:
+        agent = MATAgent.load_checkpoint(resume_checkpoint, device=execution_device)
+        if not 1 <= int(start_cycle) <= len(CYCLE_SEEDS):
+            raise ValueError("start_cycle must select one of the configured Scenario A cycles")
+        if agent.policy_version != int(start_cycle) - 1:
+            raise ValueError("resume checkpoint policy_version does not match start_cycle")
+    else:
+        if int(start_cycle) != 1:
+            raise ValueError("start_cycle greater than one requires resume_checkpoint")
+        agent = MATAgent(
+            state_dim=102, hidden_dim=128, num_migs=7, num_cut_layers=7,
+            ppo_epochs=10, minibatch_size=256, channel_conditioning="explicit",
+            bandwidth_policy="joint_dirichlet", component_balanced_ppo=True,
+            device=execution_device,
+        )
     cycles = []
     consecutive_probe_passes = 0
-    for cycle_index, seeds in enumerate(CYCLE_SEEDS, 1):
+    for cycle_index in range(int(start_cycle), len(CYCLE_SEEDS) + 1):
+        seeds = CYCLE_SEEDS[cycle_index - 1]
         buffer = MATTrajectoryBuffer()
         for episode_index, seed in enumerate(seeds):
+            episode_started = time.time()
+            print(f"scenario cycle={cycle_index} episode={episode_index + 1}/{len(seeds)} seed={seed} start", flush=True)
             run_scenario_a(
                 algorithm="mat", data_dir=data_dir, log_dir=str(root), total_epochs=total_epochs,
                 seed=seed, batch_size=batch_size, local_steps=local_steps,
@@ -144,11 +164,19 @@ def run_channel_scenario(
                 mat_agent=agent, trajectory_buffer=buffer, mat_training_mode="collect",
                 episode_id=(cycle_index - 1) * len(seeds) + episode_index,
             )
+            print(
+                f"scenario cycle={cycle_index} episode={episode_index + 1}/{len(seeds)} seed={seed} "
+                f"complete elapsed_minutes={(time.time() - episode_started) / 60.0:.1f}", flush=True)
         kwargs = buffer.as_ppo_kwargs()
         transition_count = len(buffer)
+        update_started = time.time()
         diagnostics = agent.update_policy(
             kwargs.pop("rewards"), kwargs.pop("next_states"), kwargs.pop("dones"), **kwargs
         )
+        diagnostics["ppo_update_elapsed_seconds"] = float(time.time() - update_started)
+        print(
+            f"scenario cycle={cycle_index} PPO update complete "
+            f"elapsed_minutes={diagnostics['ppo_update_elapsed_seconds'] / 60.0:.1f}", flush=True)
         checkpoint = root / f"candidate_cycle_{cycle_index}.pt"
         agent.save_checkpoint(checkpoint)
         probe_summary, _ = evaluate_probe(agent, (449, 457, 461))
@@ -203,6 +231,8 @@ def run_channel_scenario(
         "schema_version": 2,
         "status": "completed",
         "probe_report_path": str(probe_report_path),
+        "resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
+        "start_cycle": int(start_cycle),
         "cycles": cycles,
         "validation": validation,
         "numerical_gate": numerical_gate,
@@ -229,10 +259,13 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--local-steps", type=int, default=4)
     parser.add_argument("--evaluation-batches", type=int, default=10)
+    parser.add_argument("--resume-checkpoint", default=None)
+    parser.add_argument("--start-cycle", type=int, default=1)
     args = parser.parse_args()
     root, report = run_channel_scenario(
         args.probe_report, args.data_dir, args.log_dir, args.device,
         args.epochs, 5, args.batch_size, args.local_steps, args.evaluation_batches,
+        args.resume_checkpoint, args.start_cycle,
     )
     print(json.dumps({"output_dir": str(root), **report}, indent=2, allow_nan=False))
 

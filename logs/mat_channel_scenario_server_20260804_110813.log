@@ -1,0 +1,904 @@
+/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/transformer.py:392: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+scenario cycle=4 episode=1/8 seed=367 start
+scenario cycle=4 episode=1/8 seed=367 complete elapsed_minutes=5.3
+scenario cycle=4 episode=2/8 seed=373 start
+scenario cycle=4 episode=2/8 seed=373 complete elapsed_minutes=5.2
+scenario cycle=4 episode=3/8 seed=379 start
+scenario cycle=4 episode=3/8 seed=379 complete elapsed_minutes=5.4
+scenario cycle=4 episode=4/8 seed=383 start
+scenario cycle=4 episode=4/8 seed=383 complete elapsed_minutes=5.4
+scenario cycle=4 episode=5/8 seed=389 start
+scenario cycle=4 episode=5/8 seed=389 complete elapsed_minutes=5.5
+scenario cycle=4 episode=6/8 seed=397 start
+scenario cycle=4 episode=6/8 seed=397 complete elapsed_minutes=5.4
+scenario cycle=4 episode=7/8 seed=467 start
+scenario cycle=4 episode=7/8 seed=467 complete elapsed_minutes=5.4
+scenario cycle=4 episode=8/8 seed=479 start
+scenario cycle=4 episode=8/8 seed=479 complete elapsed_minutes=5.4
+scenario cycle=4 PPO update complete
+scenario cycle=5 episode=1/8 seed=487 start
+scenario cycle=5 episode=1/8 seed=487 complete elapsed_minutes=5.8
+scenario cycle=5 episode=2/8 seed=491 start
+scenario cycle=5 episode=2/8 seed=491 complete elapsed_minutes=5.8
+scenario cycle=5 episode=3/8 seed=499 start
+scenario cycle=5 episode=3/8 seed=499 complete elapsed_minutes=5.8
+scenario cycle=5 episode=4/8 seed=503 start
+scenario cycle=5 episode=4/8 seed=503 complete elapsed_minutes=4.8
+scenario cycle=5 episode=5/8 seed=509 start
+scenario cycle=5 episode=5/8 seed=509 complete elapsed_minutes=5.2
+scenario cycle=5 episode=6/8 seed=521 start
+scenario cycle=5 episode=6/8 seed=521 complete elapsed_minutes=5.1
+scenario cycle=5 episode=7/8 seed=523 start
+scenario cycle=5 episode=7/8 seed=523 complete elapsed_minutes=4.6
+scenario cycle=5 episode=8/8 seed=541 start
+scenario cycle=5 episode=8/8 seed=541 complete elapsed_minutes=5.2
+scenario cycle=5 PPO update complete
+scenario cycle=6 episode=1/8 seed=547 start
+scenario cycle=6 episode=1/8 seed=547 complete elapsed_minutes=6.6
+scenario cycle=6 episode=2/8 seed=557 start
+scenario cycle=6 episode=2/8 seed=557 complete elapsed_minutes=6.5
+scenario cycle=6 episode=3/8 seed=563 start
+scenario cycle=6 episode=3/8 seed=563 complete elapsed_minutes=6.4
+scenario cycle=6 episode=4/8 seed=569 start
+scenario cycle=6 episode=4/8 seed=569 complete elapsed_minutes=6.5
+scenario cycle=6 episode=5/8 seed=571 start
+scenario cycle=6 episode=5/8 seed=571 complete elapsed_minutes=6.4
+scenario cycle=6 episode=6/8 seed=577 start
+scenario cycle=6 episode=6/8 seed=577 complete elapsed_minutes=6.5
+scenario cycle=6 episode=7/8 seed=587 start
+scenario cycle=6 episode=7/8 seed=587 complete elapsed_minutes=6.4
+scenario cycle=6 episode=8/8 seed=593 start
+scenario cycle=6 episode=8/8 seed=593 complete elapsed_minutes=6.3
+scenario cycle=6 PPO update complete
+scenario cycle=7 episode=1/8 seed=599 start
+scenario cycle=7 episode=1/8 seed=599 complete elapsed_minutes=6.5
+scenario cycle=7 episode=2/8 seed=601 start
+scenario cycle=7 episode=2/8 seed=601 complete elapsed_minutes=6.7
+scenario cycle=7 episode=3/8 seed=607 start
+scenario cycle=7 episode=3/8 seed=607 complete elapsed_minutes=6.5
+scenario cycle=7 episode=4/8 seed=613 start
+scenario cycle=7 episode=4/8 seed=613 complete elapsed_minutes=6.6
+scenario cycle=7 episode=5/8 seed=617 start
+scenario cycle=7 episode=5/8 seed=617 complete elapsed_minutes=6.6
+scenario cycle=7 episode=6/8 seed=619 start
+scenario cycle=7 episode=6/8 seed=619 complete elapsed_minutes=6.6
+scenario cycle=7 episode=7/8 seed=631 start
+scenario cycle=7 episode=7/8 seed=631 complete elapsed_minutes=6.6
+scenario cycle=7 episode=8/8 seed=641 start
+scenario cycle=7 episode=8/8 seed=641 complete elapsed_minutes=6.6
+scenario cycle=7 PPO update complete
+scenario cycle=8 episode=1/8 seed=643 start
+scenario cycle=8 episode=1/8 seed=643 complete elapsed_minutes=6.3
+scenario cycle=8 episode=2/8 seed=647 start
+scenario cycle=8 episode=2/8 seed=647 complete elapsed_minutes=6.4
+scenario cycle=8 episode=3/8 seed=653 start
+scenario cycle=8 episode=3/8 seed=653 complete elapsed_minutes=6.4
+scenario cycle=8 episode=4/8 seed=659 start
+scenario cycle=8 episode=4/8 seed=659 complete elapsed_minutes=6.2
+scenario cycle=8 episode=5/8 seed=661 start
+scenario cycle=8 episode=5/8 seed=661 complete elapsed_minutes=6.5
+scenario cycle=8 episode=6/8 seed=673 start
+scenario cycle=8 episode=6/8 seed=673 complete elapsed_minutes=6.3
+scenario cycle=8 episode=7/8 seed=677 start
+scenario cycle=8 episode=7/8 seed=677 complete elapsed_minutes=6.5
+scenario cycle=8 episode=8/8 seed=683 start
+scenario cycle=8 episode=8/8 seed=683 complete elapsed_minutes=6.4
+scenario cycle=8 PPO update complete
+{
+  "output_dir": "logs/mat_channel_scenario_20260804_110823",
+  "schema_version": 2,
+  "status": "completed",
+  "probe_report_path": "logs/mat_channel_probe_extension_20260803_203304/probe_report.json",
+  "resume_checkpoint": "logs/mat_channel_scenario_20260804_011758/candidate_cycle_3.pt",
+  "start_cycle": 4,
+  "cycles": [
+    {
+      "cycle": 4,
+      "seeds": [
+        367,
+        373,
+        379,
+        383,
+        389,
+        397,
+        467,
+        479
+      ],
+      "transition_count": 3480,
+      "policy_version": 4,
+      "checkpoint": "logs/mat_channel_scenario_20260804_110823/candidate_cycle_4.pt",
+      "update": {
+        "policy_loss": -0.0014055344245640171,
+        "value_loss": 0.04263877248897735,
+        "entropy": -0.7684930437756167,
+        "approx_kl": 0.005107705562711519,
+        "clip_fraction": 0.0554648808506585,
+        "cluster_policy_loss": -0.0004923628640016818,
+        "cluster_approx_kl": 0.004705406468799982,
+        "cluster_clip_fraction": 0.02145114987317858,
+        "bandwidth_policy_loss": -0.0006623690773083309,
+        "bandwidth_approx_kl": 0.002990053061438703,
+        "bandwidth_clip_fraction": 0.025,
+        "split_policy_loss": -0.003061870844285713,
+        "split_approx_kl": 0.0076276567188018115,
+        "split_clip_fraction": 0.11994348692097541,
+        "cluster_entropy": 0.8171463934340697,
+        "bandwidth_entropy": -24.191734707711753,
+        "split_entropy_component": 2.615299117702177,
+        "grad_norm_pre": 0.9413960874080658,
+        "grad_norm_post": 0.4999994069337845,
+        "grad_norm": 0.9413960874080658,
+        "grad_norm_pre_max": 1.4185676574707031,
+        "grad_norm_post_max": 0.4999997019767761,
+        "ppo_epochs_run": 10,
+        "kl_early_stop": false,
+        "episode_count": 8,
+        "transition_count": 3480,
+        "policy_version_count": 1,
+        "target_drift_during_update": 0.0,
+        "component_balanced_ppo": true,
+        "encoder_grad_norm_pre": 0.41446751952171323,
+        "encoder_grad_norm_post": 0.22719677537679672,
+        "value_head_grad_norm_pre": 0.38222059402614833,
+        "value_head_grad_norm_post": 0.20586351240053774,
+        "decoder_grad_norm_pre": 0.035333890467882156,
+        "decoder_grad_norm_post": 0.01665512304753065,
+        "bandwidth_head_grad_norm_pre": 0.6481718450784684,
+        "bandwidth_head_grad_norm_post": 0.3348038211464882,
+        "split_head_grad_norm_pre": 0.17453538849949837,
+        "split_head_grad_norm_post": 0.10179521329700947,
+        "cluster_policy_grad_norm": 0.28719733506441114,
+        "bandwidth_policy_grad_norm": 6.090797424316406,
+        "split_policy_grad_norm": 1.4362663209438324,
+        "bandwidth_actor_gradient_share": 0.779446368851469,
+        "bandwidth_latent_mean_abs": 0.0999999961023615,
+        "bandwidth_latent_mean_std": 0.017914613441436914,
+        "bandwidth_channel_weight": 0.0,
+        "bandwidth_channel_weight_drift": 0.0,
+        "bandwidth_mean_head_parameter_drift": 0.0,
+        "bandwidth_physical_weight": 0.001960711320862174,
+        "bandwidth_effective_physical_coefficient": 0.019607113674283028,
+        "bandwidth_alpha_mean": 22.5,
+        "bandwidth_alpha_min": 21.65444564819336,
+        "bandwidth_alpha_max": 24.272045135498047,
+        "bandwidth_context_score_std": 0.009454730898141861,
+        "bandwidth_physical_score_std": 0.005966441240161657,
+        "online_value_mean": -1.420439960045376,
+        "target_value_mean": -1.0566927173699456,
+        "online_target_value_drift": 0.36374724267543046,
+        "station_1_return_mean": -4.602770805358887,
+        "station_1_return_std": 1.0185911655426025,
+        "station_1_td_residual_mean": -0.2346571832895279,
+        "station_1_td_residual_std": 0.12971463799476624,
+        "station_1_explained_variance": 0.0182427255916896,
+        "station_2_return_mean": -6.532767295837402,
+        "station_2_return_std": 2.46736216545105,
+        "station_2_td_residual_mean": -0.349555641412735,
+        "station_2_td_residual_std": 0.4327968657016754,
+        "station_2_explained_variance": 0.032085396544719424,
+        "station_3_return_mean": -4.1388139724731445,
+        "station_3_return_std": 0.997911274433136,
+        "station_3_td_residual_mean": -0.2060028314590454,
+        "station_3_td_residual_std": 0.12770305573940277,
+        "station_3_explained_variance": 0.0018800411844129838
+      },
+      "probe": {
+        "seed_summaries": [
+          {
+            "seed": 449,
+            "required_airtime_bandwidth_spearman": 0.9878787878787878,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.622512783967144,
+            "actual_max_tx_delay_ms": 13.228928324160876,
+            "oracle_max_tx_delay_ms": 3.7988082842650184,
+            "equal_delay_improvement": 0.02889220704343863,
+            "oracle_gap_closure": 0.04006476984504192,
+            "oracle_regret_ms": 9.430120039895858
+          },
+          {
+            "seed": 457,
+            "required_airtime_bandwidth_spearman": 0.9757575757575757,
+            "counterfactual_delta_spearman": 0.9679050956565179,
+            "equal_max_tx_delay_ms": 13.748954695596558,
+            "actual_max_tx_delay_ms": 13.351271131970789,
+            "oracle_max_tx_delay_ms": 3.7849399757897046,
+            "equal_delay_improvement": 0.028924639903943894,
+            "oracle_gap_closure": 0.03991198074358905,
+            "oracle_regret_ms": 9.566331156181084
+          },
+          {
+            "seed": 461,
+            "required_airtime_bandwidth_spearman": 0.9878787878787878,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.212506609159435,
+            "actual_max_tx_delay_ms": 12.837364737082959,
+            "oracle_max_tx_delay_ms": 3.8127115022903126,
+            "equal_delay_improvement": 0.02839293732624609,
+            "oracle_gap_closure": 0.03990957971012925,
+            "oracle_regret_ms": 9.024653234792646
+          }
+        ],
+        "median_required_airtime_bandwidth_spearman": 0.9878787878787878,
+        "all_seed_correlations_positive": true,
+        "median_counterfactual_delta_spearman": 0.9636363636363635,
+        "equal_delay_improvement": 0.028736594757876207,
+        "oracle_gap_closure": 0.03996211009958674,
+        "oracle_regret_ms": 9.340368143623195,
+        "decision_order_invariance_max_abs": 0.0
+      },
+      "legacy_regret_reduction": 0.038132051235571986,
+      "gates": {
+        "required_airtime_spearman": true,
+        "all_holdout_seeds_positive": true,
+        "counterfactual_spearman": true,
+        "equal_delay_improvement": false,
+        "oracle_gap_closure": false,
+        "legacy_regret_reduction": false,
+        "decision_order_invariance": true,
+        "numerical_stability": true
+      },
+      "passed": false
+    },
+    {
+      "cycle": 5,
+      "seeds": [
+        487,
+        491,
+        499,
+        503,
+        509,
+        521,
+        523,
+        541
+      ],
+      "transition_count": 3480,
+      "policy_version": 5,
+      "checkpoint": "logs/mat_channel_scenario_20260804_110823/candidate_cycle_5.pt",
+      "update": {
+        "policy_loss": -0.0013245323703786303,
+        "value_loss": 0.034889130715904874,
+        "entropy": -0.7640873360689515,
+        "approx_kl": 0.003442237198320519,
+        "clip_fraction": 0.04586368980988774,
+        "cluster_policy_loss": -0.00026687194339094025,
+        "cluster_approx_kl": 0.0006215937696950424,
+        "cluster_clip_fraction": 0.008554597883003539,
+        "bandwidth_policy_loss": -0.001194726531776023,
+        "bandwidth_approx_kl": 0.0021276395279785686,
+        "bandwidth_clip_fraction": 0.018017241379310343,
+        "split_policy_loss": -0.0025119974996500104,
+        "split_approx_kl": 0.007577478002687252,
+        "split_clip_fraction": 0.11101922587031263,
+        "cluster_entropy": 0.8244537668272681,
+        "bandwidth_entropy": -24.19172847265485,
+        "split_entropy_component": 2.6170108578808007,
+        "grad_norm_pre": 0.8396676123142243,
+        "grad_norm_post": 0.4999993622303009,
+        "grad_norm": 0.8396676123142243,
+        "grad_norm_pre_max": 1.0810208320617676,
+        "grad_norm_post_max": 0.4999995529651642,
+        "ppo_epochs_run": 10,
+        "kl_early_stop": false,
+        "episode_count": 8,
+        "transition_count": 3480,
+        "policy_version_count": 1,
+        "target_drift_during_update": 0.0,
+        "component_balanced_ppo": true,
+        "encoder_grad_norm_pre": 0.3366750255227089,
+        "encoder_grad_norm_post": 0.19571194052696228,
+        "value_head_grad_norm_pre": 0.4110151343047619,
+        "value_head_grad_norm_post": 0.23182619363069534,
+        "decoder_grad_norm_pre": 0.012246890040114523,
+        "decoder_grad_norm_post": 0.008231243770569562,
+        "bandwidth_head_grad_norm_pre": 0.5913788437843323,
+        "bandwidth_head_grad_norm_post": 0.35806275606155397,
+        "split_head_grad_norm_pre": 0.1779412090778351,
+        "split_head_grad_norm_post": 0.11488239876925946,
+        "cluster_policy_grad_norm": 0.20128006339073182,
+        "bandwidth_policy_grad_norm": 5.513960433006287,
+        "split_policy_grad_norm": 1.1826606869697571,
+        "bandwidth_actor_gradient_share": 0.7993678492093147,
+        "bandwidth_latent_mean_abs": 0.09999999609872184,
+        "bandwidth_latent_mean_std": 0.017877077898219657,
+        "bandwidth_channel_weight": 0.0,
+        "bandwidth_channel_weight_drift": 0.0,
+        "bandwidth_mean_head_parameter_drift": 0.0,
+        "bandwidth_physical_weight": 0.0021372996270656586,
+        "bandwidth_effective_physical_coefficient": 0.021372996270656586,
+        "bandwidth_alpha_mean": 22.5,
+        "bandwidth_alpha_min": 21.58500099182129,
+        "bandwidth_alpha_max": 23.732717514038086,
+        "bandwidth_context_score_std": 0.011144669726490974,
+        "bandwidth_physical_score_std": 0.005086458753794432,
+        "online_value_mean": -1.7794906181850652,
+        "target_value_mean": -1.4202868052940258,
+        "online_target_value_drift": 0.35920381289103936,
+        "station_1_return_mean": -4.770445346832275,
+        "station_1_return_std": 1.0458515882492065,
+        "station_1_td_residual_mean": -0.22092626988887787,
+        "station_1_td_residual_std": 0.1728593409061432,
+        "station_1_explained_variance": 0.01013473153608313,
+        "station_2_return_mean": -6.174495697021484,
+        "station_2_return_std": 2.0874264240264893,
+        "station_2_td_residual_mean": -0.30425184965133667,
+        "station_2_td_residual_std": 0.40201497077941895,
+        "station_2_explained_variance": 0.037689240952435976,
+        "station_3_return_mean": -4.244842052459717,
+        "station_3_return_std": 1.018808364868164,
+        "station_3_td_residual_mean": -0.18960610032081604,
+        "station_3_td_residual_std": 0.14531512558460236,
+        "station_3_explained_variance": 0.004228794995777885
+      },
+      "probe": {
+        "seed_summaries": [
+          {
+            "seed": 449,
+            "required_airtime_bandwidth_spearman": 0.8303030303030302,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.622512783967144,
+            "actual_max_tx_delay_ms": 13.249818105282356,
+            "oracle_max_tx_delay_ms": 3.7988082842650184,
+            "equal_delay_improvement": 0.02735873216602345,
+            "oracle_gap_closure": 0.03793830308068493,
+            "oracle_regret_ms": 9.451009821017339
+          },
+          {
+            "seed": 457,
+            "required_airtime_bandwidth_spearman": 0.8424242424242423,
+            "counterfactual_delta_spearman": 0.9664298664157416,
+            "equal_max_tx_delay_ms": 13.748954695596558,
+            "actual_max_tx_delay_ms": 13.409406333637895,
+            "oracle_max_tx_delay_ms": 3.7849399757897046,
+            "equal_delay_improvement": 0.024696303790091877,
+            "oracle_gap_closure": 0.034077464908165524,
+            "oracle_regret_ms": 9.62446635784819
+          },
+          {
+            "seed": 461,
+            "required_airtime_bandwidth_spearman": 0.8545454545454544,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.212506609159435,
+            "actual_max_tx_delay_ms": 12.840557641523004,
+            "oracle_max_tx_delay_ms": 3.8127115022903126,
+            "equal_delay_improvement": 0.0281512795897927,
+            "oracle_gap_closure": 0.03956990162100668,
+            "oracle_regret_ms": 9.027846139232691
+          }
+        ],
+        "median_required_airtime_bandwidth_spearman": 0.8424242424242423,
+        "all_seed_correlations_positive": true,
+        "median_counterfactual_delta_spearman": 0.9636363636363635,
+        "equal_delay_improvement": 0.026735438515302676,
+        "oracle_gap_closure": 0.037195223203285714,
+        "oracle_regret_ms": 9.36777410603274,
+        "decision_order_invariance_max_abs": 0.0
+      },
+      "legacy_regret_reduction": 0.03530979450634641,
+      "gates": {
+        "required_airtime_spearman": true,
+        "all_holdout_seeds_positive": true,
+        "counterfactual_spearman": true,
+        "equal_delay_improvement": false,
+        "oracle_gap_closure": false,
+        "legacy_regret_reduction": false,
+        "decision_order_invariance": true,
+        "numerical_stability": true
+      },
+      "passed": false
+    },
+    {
+      "cycle": 6,
+      "seeds": [
+        547,
+        557,
+        563,
+        569,
+        571,
+        577,
+        587,
+        593
+      ],
+      "transition_count": 3480,
+      "policy_version": 6,
+      "checkpoint": "logs/mat_channel_scenario_20260804_110823/candidate_cycle_6.pt",
+      "update": {
+        "policy_loss": -0.001617825393636326,
+        "value_loss": 0.04351012614159674,
+        "entropy": -0.7729135866871842,
+        "approx_kl": 0.004082742570181859,
+        "clip_fraction": 0.04548100399281615,
+        "cluster_policy_loss": -0.00038627763784934466,
+        "cluster_approx_kl": 0.002707739239064824,
+        "cluster_clip_fraction": 0.0029224138482120527,
+        "bandwidth_policy_loss": -0.0012058098706264817,
+        "bandwidth_approx_kl": 0.002976139946573082,
+        "bandwidth_clip_fraction": 0.025660919540229886,
+        "split_policy_loss": -0.003261388023444836,
+        "split_approx_kl": 0.006564348195911773,
+        "split_clip_fraction": 0.10785967455341898,
+        "cluster_entropy": 0.8229987658817193,
+        "bandwidth_entropy": -24.19167235363489,
+        "split_entropy_component": 2.5638460578966416,
+        "grad_norm_pre": 0.9139275491237641,
+        "grad_norm_post": 0.4999994248151779,
+        "grad_norm": 0.9139275491237641,
+        "grad_norm_pre_max": 1.1327626705169678,
+        "grad_norm_post_max": 0.4999995827674866,
+        "ppo_epochs_run": 10,
+        "kl_early_stop": false,
+        "episode_count": 8,
+        "transition_count": 3480,
+        "policy_version_count": 1,
+        "target_drift_during_update": 0.0,
+        "component_balanced_ppo": true,
+        "encoder_grad_norm_pre": 0.36192469447851183,
+        "encoder_grad_norm_post": 0.19751873537898063,
+        "value_head_grad_norm_pre": 0.4908547006547451,
+        "value_head_grad_norm_post": 0.2685939621180296,
+        "decoder_grad_norm_pre": 0.015015627909451722,
+        "decoder_grad_norm_post": 0.008745560375973582,
+        "bandwidth_head_grad_norm_pre": 0.5797904133796692,
+        "bandwidth_head_grad_norm_post": 0.3186155617237091,
+        "split_head_grad_norm_pre": 0.19962077736854553,
+        "split_head_grad_norm_post": 0.11200947612524033,
+        "cluster_policy_grad_norm": 0.20005152747035027,
+        "bandwidth_policy_grad_norm": 5.1807492733001705,
+        "split_policy_grad_norm": 1.116776669025421,
+        "bandwidth_actor_gradient_share": 0.7973355142563422,
+        "bandwidth_latent_mean_abs": 0.09999999612312892,
+        "bandwidth_latent_mean_std": 0.017974860286930096,
+        "bandwidth_channel_weight": 0.0,
+        "bandwidth_channel_weight_drift": 0.0,
+        "bandwidth_mean_head_parameter_drift": 0.0,
+        "bandwidth_physical_weight": 0.0027768590953201056,
+        "bandwidth_effective_physical_coefficient": 0.027768591418862343,
+        "bandwidth_alpha_mean": 22.5,
+        "bandwidth_alpha_min": 21.65607261657715,
+        "bandwidth_alpha_max": 24.096763610839844,
+        "bandwidth_context_score_std": 0.013477860018610954,
+        "bandwidth_physical_score_std": 0.005584568250924349,
+        "online_value_mean": -2.1374609255927735,
+        "target_value_mean": -1.7785365704832405,
+        "online_target_value_drift": 0.3589243551095327,
+        "station_1_return_mean": -4.974350929260254,
+        "station_1_return_std": 1.0884860754013062,
+        "station_1_td_residual_mean": -0.21280135214328766,
+        "station_1_td_residual_std": 0.17073461413383484,
+        "station_1_explained_variance": 0.010416843440135715,
+        "station_2_return_mean": -6.635692596435547,
+        "station_2_return_std": 2.422053337097168,
+        "station_2_td_residual_mean": -0.3095531165599823,
+        "station_2_td_residual_std": 0.4042234718799591,
+        "station_2_explained_variance": 0.05247122812665184,
+        "station_3_return_mean": -4.601587772369385,
+        "station_3_return_std": 1.1425657272338867,
+        "station_3_td_residual_mean": -0.18880775570869446,
+        "station_3_td_residual_std": 0.2456752359867096,
+        "station_3_explained_variance": 0.0013805053877792295
+      },
+      "probe": {
+        "seed_summaries": [
+          {
+            "seed": 449,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.622512783967144,
+            "actual_max_tx_delay_ms": 13.052694111300006,
+            "oracle_max_tx_delay_ms": 3.7988082842650184,
+            "equal_delay_improvement": 0.041829189790724884,
+            "oracle_gap_closure": 0.05800445979257781,
+            "oracle_regret_ms": 9.253885827034988
+          },
+          {
+            "seed": 457,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.973900133015329,
+            "equal_max_tx_delay_ms": 13.748954695596558,
+            "actual_max_tx_delay_ms": 13.160302681071329,
+            "oracle_max_tx_delay_ms": 3.7849399757897046,
+            "equal_delay_improvement": 0.042814310437269756,
+            "oracle_gap_closure": 0.059077794551535896,
+            "oracle_regret_ms": 9.375362705281624
+          },
+          {
+            "seed": 461,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.212506609159435,
+            "actual_max_tx_delay_ms": 12.674347191385356,
+            "oracle_max_tx_delay_ms": 3.8127115022903126,
+            "equal_delay_improvement": 0.04073106138701987,
+            "oracle_gap_closure": 0.05725224982625483,
+            "oracle_regret_ms": 8.861635689095044
+          }
+        ],
+        "median_required_airtime_bandwidth_spearman": 0.9999999999999999,
+        "all_seed_correlations_positive": true,
+        "median_counterfactual_delta_spearman": 0.9636363636363635,
+        "equal_delay_improvement": 0.04179152053833817,
+        "oracle_gap_closure": 0.05811150139012284,
+        "oracle_regret_ms": 9.163628073803885,
+        "decision_order_invariance_max_abs": 0.0
+      },
+      "legacy_regret_reduction": 0.05633268378105076,
+      "gates": {
+        "required_airtime_spearman": true,
+        "all_holdout_seeds_positive": true,
+        "counterfactual_spearman": true,
+        "equal_delay_improvement": false,
+        "oracle_gap_closure": false,
+        "legacy_regret_reduction": false,
+        "decision_order_invariance": true,
+        "numerical_stability": true
+      },
+      "passed": false
+    },
+    {
+      "cycle": 7,
+      "seeds": [
+        599,
+        601,
+        607,
+        613,
+        617,
+        619,
+        631,
+        641
+      ],
+      "transition_count": 3480,
+      "policy_version": 7,
+      "checkpoint": "logs/mat_channel_scenario_20260804_110823/candidate_cycle_7.pt",
+      "update": {
+        "policy_loss": -0.0020274617261038237,
+        "value_loss": 0.03446166992660761,
+        "entropy": -0.8048010642998905,
+        "approx_kl": 0.0046977714977102245,
+        "clip_fraction": 0.060898469751165515,
+        "cluster_policy_loss": -0.0010801160810138106,
+        "cluster_approx_kl": 0.0045708120869337385,
+        "cluster_clip_fraction": 0.056037357250421214,
+        "bandwidth_policy_loss": -0.0002703897344275609,
+        "bandwidth_approx_kl": 0.000977515881431514,
+        "bandwidth_clip_fraction": 0.002442528735632184,
+        "split_policy_loss": -0.004731879237584486,
+        "split_approx_kl": 0.008544986092036029,
+        "split_clip_fraction": 0.12421551748339472,
+        "cluster_entropy": 0.8095606256627489,
+        "bandwidth_entropy": -24.19191202711785,
+        "split_entropy_component": 2.44751126115007,
+        "grad_norm_pre": 0.7543799355626106,
+        "grad_norm_post": 0.47465388625860216,
+        "grad_norm": 0.7543799355626106,
+        "grad_norm_pre_max": 1.050209403038025,
+        "grad_norm_post_max": 0.4999995529651642,
+        "ppo_epochs_run": 10,
+        "kl_early_stop": false,
+        "episode_count": 8,
+        "transition_count": 3480,
+        "policy_version_count": 1,
+        "target_drift_during_update": 0.0,
+        "component_balanced_ppo": true,
+        "encoder_grad_norm_pre": 0.37672955468297004,
+        "encoder_grad_norm_post": 0.23555439934134484,
+        "value_head_grad_norm_pre": 0.5517629213631153,
+        "value_head_grad_norm_post": 0.33787508234381675,
+        "decoder_grad_norm_pre": 0.070158576592803,
+        "decoder_grad_norm_post": 0.04502244545146823,
+        "bandwidth_head_grad_norm_pre": 0.13306352570652963,
+        "bandwidth_head_grad_norm_post": 0.09055746197700501,
+        "split_head_grad_norm_pre": 0.2333420768380165,
+        "split_head_grad_norm_post": 0.15721519142389298,
+        "cluster_policy_grad_norm": 0.40511166453361513,
+        "bandwidth_policy_grad_norm": 7.64585165977478,
+        "split_policy_grad_norm": 1.092297512292862,
+        "bandwidth_actor_gradient_share": 0.836228102469502,
+        "bandwidth_latent_mean_abs": 0.09999999617172897,
+        "bandwidth_latent_mean_std": 0.0180223581816935,
+        "bandwidth_channel_weight": 0.0,
+        "bandwidth_channel_weight_drift": 0.0,
+        "bandwidth_mean_head_parameter_drift": 0.0,
+        "bandwidth_physical_weight": 0.0033070500940084457,
+        "bandwidth_effective_physical_coefficient": 0.03307050094008446,
+        "bandwidth_alpha_mean": 22.5,
+        "bandwidth_alpha_min": 21.34429168701172,
+        "bandwidth_alpha_max": 24.748737335205078,
+        "bandwidth_context_score_std": 0.012645908631384373,
+        "bandwidth_physical_score_std": 0.007243599276989698,
+        "online_value_mean": -2.460721036963079,
+        "target_value_mean": -2.138222976731158,
+        "online_target_value_drift": 0.3224980602319213,
+        "station_1_return_mean": -5.083297252655029,
+        "station_1_return_std": 1.131103277206421,
+        "station_1_td_residual_mean": -0.19444595277309418,
+        "station_1_td_residual_std": 0.1970660388469696,
+        "station_1_explained_variance": 0.006391116782961115,
+        "station_2_return_mean": -6.204709529876709,
+        "station_2_return_std": 1.9089289903640747,
+        "station_2_td_residual_mean": -0.2606508731842041,
+        "station_2_td_residual_std": 0.3103313744068146,
+        "station_2_explained_variance": 0.06728483996683332,
+        "station_3_return_mean": -4.671729564666748,
+        "station_3_return_std": 1.138051152229309,
+        "station_3_td_residual_mean": -0.17166447639465332,
+        "station_3_td_residual_std": 0.1909155547618866,
+        "station_3_explained_variance": 0.0022125399985868377
+      },
+      "probe": {
+        "seed_summaries": [
+          {
+            "seed": 449,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.622512783967144,
+            "actual_max_tx_delay_ms": 12.947753747469546,
+            "oracle_max_tx_delay_ms": 3.7988082842650184,
+            "equal_delay_improvement": 0.04953264109186577,
+            "oracle_gap_closure": 0.06868682140409026,
+            "oracle_regret_ms": 9.148945463204528
+          },
+          {
+            "seed": 457,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9724113487823879,
+            "equal_max_tx_delay_ms": 13.748954695596558,
+            "actual_max_tx_delay_ms": 13.051439187923556,
+            "oracle_max_tx_delay_ms": 3.7849399757897046,
+            "equal_delay_improvement": 0.0507322573327264,
+            "oracle_gap_closure": 0.07000346018020762,
+            "oracle_regret_ms": 9.266499212133851
+          },
+          {
+            "seed": 461,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.212506609159435,
+            "actual_max_tx_delay_ms": 12.574430627521018,
+            "oracle_max_tx_delay_ms": 3.8127115022903126,
+            "equal_delay_improvement": 0.04829333301495401,
+            "oracle_gap_closure": 0.06788190321001021,
+            "oracle_regret_ms": 8.761719125230705
+          }
+        ],
+        "median_required_airtime_bandwidth_spearman": 0.9999999999999999,
+        "all_seed_correlations_positive": true,
+        "median_counterfactual_delta_spearman": 0.9636363636363635,
+        "equal_delay_improvement": 0.04951941047984872,
+        "oracle_gap_closure": 0.06885739493143601,
+        "oracle_regret_ms": 9.059054600189695,
+        "decision_order_invariance_max_abs": 0.0
+      },
+      "legacy_regret_reduction": 0.0671016246850689,
+      "gates": {
+        "required_airtime_spearman": true,
+        "all_holdout_seeds_positive": true,
+        "counterfactual_spearman": true,
+        "equal_delay_improvement": false,
+        "oracle_gap_closure": false,
+        "legacy_regret_reduction": false,
+        "decision_order_invariance": true,
+        "numerical_stability": true
+      },
+      "passed": false
+    },
+    {
+      "cycle": 8,
+      "seeds": [
+        643,
+        647,
+        653,
+        659,
+        661,
+        673,
+        677,
+        683
+      ],
+      "transition_count": 3480,
+      "policy_version": 8,
+      "checkpoint": "logs/mat_channel_scenario_20260804_110823/candidate_cycle_8.pt",
+      "update": {
+        "policy_loss": -0.0010123161537652276,
+        "value_loss": 0.036963675941281894,
+        "entropy": -0.7962027032431429,
+        "approx_kl": 0.0028574423122632356,
+        "clip_fraction": 0.029363871607073082,
+        "cluster_policy_loss": 0.00028751688889430113,
+        "cluster_approx_kl": 0.0014204810792339284,
+        "cluster_clip_fraction": 0.0014482758849345405,
+        "bandwidth_policy_loss": -0.0010322357699214467,
+        "bandwidth_approx_kl": 0.0012370860559501866,
+        "bandwidth_clip_fraction": 0.007902298850574713,
+        "split_policy_loss": -0.0022922305967819122,
+        "split_approx_kl": 0.005914759553998807,
+        "split_clip_fraction": 0.07874103739557939,
+        "cluster_entropy": 0.8257231307594941,
+        "bandwidth_entropy": -24.192006322926492,
+        "split_entropy_component": 2.4318214708395387,
+        "grad_norm_pre": 0.8074243694543839,
+        "grad_norm_post": 0.47763285636901853,
+        "grad_norm": 0.8074243694543839,
+        "grad_norm_pre_max": 1.1436232328414917,
+        "grad_norm_post_max": 0.49999961256980896,
+        "ppo_epochs_run": 10,
+        "kl_early_stop": false,
+        "episode_count": 8,
+        "transition_count": 3480,
+        "policy_version_count": 1,
+        "target_drift_during_update": 0.0,
+        "component_balanced_ppo": true,
+        "encoder_grad_norm_pre": 0.3425180107355118,
+        "encoder_grad_norm_post": 0.19736985862255096,
+        "value_head_grad_norm_pre": 0.5717542856931687,
+        "value_head_grad_norm_post": 0.3268268764019012,
+        "decoder_grad_norm_pre": 0.018417890556156634,
+        "decoder_grad_norm_post": 0.013473507575690746,
+        "bandwidth_head_grad_norm_pre": 0.3712463974952698,
+        "bandwidth_head_grad_norm_post": 0.23352857828140258,
+        "split_head_grad_norm_pre": 0.18375492021441459,
+        "split_head_grad_norm_post": 0.11390373706817628,
+        "cluster_policy_grad_norm": 0.21009968221187592,
+        "bandwidth_policy_grad_norm": 5.809832644462586,
+        "split_policy_grad_norm": 1.1879583656787873,
+        "bandwidth_actor_gradient_share": 0.806037839978089,
+        "bandwidth_latent_mean_abs": 0.09999999618778627,
+        "bandwidth_latent_mean_std": 0.0179799835537488,
+        "bandwidth_channel_weight": 0.0,
+        "bandwidth_channel_weight_drift": 0.0,
+        "bandwidth_mean_head_parameter_drift": 0.0,
+        "bandwidth_physical_weight": 0.0035328802186995745,
+        "bandwidth_effective_physical_coefficient": 0.03532880172133446,
+        "bandwidth_alpha_mean": 22.5,
+        "bandwidth_alpha_min": 21.08696174621582,
+        "bandwidth_alpha_max": 24.877012252807617,
+        "bandwidth_context_score_std": 0.01753067970275879,
+        "bandwidth_physical_score_std": 0.008782749995589256,
+        "online_value_mean": -2.762393386542112,
+        "target_value_mean": -2.4610979368631867,
+        "online_target_value_drift": 0.30129544967892524,
+        "station_1_return_mean": -5.120810031890869,
+        "station_1_return_std": 1.0860546827316284,
+        "station_1_td_residual_mean": -0.17636503279209137,
+        "station_1_td_residual_std": 0.2122671753168106,
+        "station_1_explained_variance": 0.005393401633339234,
+        "station_2_return_mean": -6.280374526977539,
+        "station_2_return_std": 2.1772661209106445,
+        "station_2_td_residual_mean": -0.24514925479888916,
+        "station_2_td_residual_std": 0.41471588611602783,
+        "station_2_explained_variance": 0.046963995124706504,
+        "station_3_return_mean": -4.687382221221924,
+        "station_3_return_std": 1.1388599872589111,
+        "station_3_td_residual_mean": -0.15072669088840485,
+        "station_3_td_residual_std": 0.21383357048034668,
+        "station_3_explained_variance": -0.001403464757393058
+      },
+      "probe": {
+        "seed_summaries": [
+          {
+            "seed": 449,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.622512783967144,
+            "actual_max_tx_delay_ms": 12.903350496500206,
+            "oracle_max_tx_delay_ms": 3.7988082842650184,
+            "equal_delay_improvement": 0.05279219031553031,
+            "oracle_gap_closure": 0.0732068322585176,
+            "oracle_regret_ms": 9.104542212235188
+          },
+          {
+            "seed": 457,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9723784643137395,
+            "equal_max_tx_delay_ms": 13.748954695596558,
+            "actual_max_tx_delay_ms": 13.005375007893889,
+            "oracle_max_tx_delay_ms": 3.7849399757897046,
+            "equal_delay_improvement": 0.05408263421951767,
+            "oracle_gap_closure": 0.0746265143732227,
+            "oracle_regret_ms": 9.220435032104184
+          },
+          {
+            "seed": 461,
+            "required_airtime_bandwidth_spearman": 0.9999999999999999,
+            "counterfactual_delta_spearman": 0.9636363636363635,
+            "equal_max_tx_delay_ms": 13.212506609159435,
+            "actual_max_tx_delay_ms": 12.532173796187825,
+            "oracle_max_tx_delay_ms": 3.8127115022903126,
+            "equal_delay_improvement": 0.051491577873647096,
+            "oracle_gap_closure": 0.07237740878781929,
+            "oracle_regret_ms": 8.719462293897513
+          }
+        ],
+        "median_required_airtime_bandwidth_spearman": 0.9999999999999999,
+        "all_seed_correlations_positive": true,
+        "median_counterfactual_delta_spearman": 0.9636363636363635,
+        "equal_delay_improvement": 0.05278880080289836,
+        "oracle_gap_closure": 0.07340358513985319,
+        "oracle_regret_ms": 9.014813179412295,
+        "decision_order_invariance_max_abs": 0.0
+      },
+      "legacy_regret_reduction": 0.07165759121649885,
+      "gates": {
+        "required_airtime_spearman": true,
+        "all_holdout_seeds_positive": true,
+        "counterfactual_spearman": true,
+        "equal_delay_improvement": false,
+        "oracle_gap_closure": false,
+        "legacy_regret_reduction": false,
+        "decision_order_invariance": true,
+        "numerical_stability": true
+      },
+      "passed": false
+    }
+  ],
+  "validation": {
+    "seeds": {
+      "7": {
+        "required_airtime_bandwidth_spearman": 0.9757575757575757,
+        "counterfactual_delta_spearman": 0.9999999999999999,
+        "oracle_gap_closure": 0.040739620946801,
+        "stations": {
+          "1": {
+            "equal_bandwidth_improvement": 0.015616613729454523
+          },
+          "2": {
+            "equal_bandwidth_improvement": 0.014008393040673537
+          },
+          "3": {
+            "equal_bandwidth_improvement": 0.01578589332412768
+          }
+        }
+      },
+      "17": {
+        "required_airtime_bandwidth_spearman": 0.9757575757575757,
+        "counterfactual_delta_spearman": 0.9878787878787878,
+        "oracle_gap_closure": 0.040368337499442165,
+        "stations": {
+          "1": {
+            "equal_bandwidth_improvement": 0.014800346122754108
+          },
+          "2": {
+            "equal_bandwidth_improvement": 0.015467988671648074
+          },
+          "3": {
+            "equal_bandwidth_improvement": 0.015498538831062818
+          }
+        }
+      },
+      "29": {
+        "required_airtime_bandwidth_spearman": 0.9757575757575757,
+        "counterfactual_delta_spearman": 0.9878787878787878,
+        "oracle_gap_closure": 0.04184525850843418,
+        "stations": {
+          "1": {
+            "equal_bandwidth_improvement": 0.016099569291003087
+          },
+          "2": {
+            "equal_bandwidth_improvement": 0.015328986025800446
+          },
+          "3": {
+            "equal_bandwidth_improvement": 0.015351266554634318
+          }
+        }
+      }
+    },
+    "overall_median_required_airtime_bandwidth_spearman": 0.9757575757575757,
+    "bootstrap_95pct_lower": 0.8999184952978058,
+    "overall_oracle_gap_closure": 0.040984405651559114,
+    "gates": {
+      "each_seed_required_airtime_correlation_positive": true,
+      "overall_median_required_airtime_correlation_at_least_0_30": true,
+      "bootstrap_95pct_lower_above_zero": true,
+      "each_seed_counterfactual_at_least_0_30": true,
+      "overall_equal_delay_improvement_at_least_0_03": false,
+      "no_station_seed_degrades_more_than_0_01": true,
+      "overall_oracle_gap_closure_at_least_0_20": false
+    },
+    "passed": false
+  },
+  "numerical_gate": true,
+  "passed": false,
+  "interpretation_boundary": {
+    "channel_awareness": "hard gate",
+    "payload_visibility": "recorded separately; action order unchanged",
+    "raw_congestion_latency": "descriptive only"
+  }
+}

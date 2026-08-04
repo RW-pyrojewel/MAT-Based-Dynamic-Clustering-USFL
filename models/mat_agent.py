@@ -1,4 +1,4 @@
-﻿"""Shared-encoder MAT PPO with a frozen target critic and full-batch-equivalent updates."""
+"""Shared-encoder MAT PPO with a frozen target critic and full-batch-equivalent updates."""
 from copy import deepcopy
 
 import numpy as np
@@ -268,6 +268,30 @@ class MATAgent(BaseAgent):
         return float(self._aggregate_token_values(self.value_head, encoded).item())
 
     @torch.no_grad()
+    def _batch_values(self, states, edge_states, target=False, batch_size=None):
+        """Evaluate values in shape-compatible GPU batches while preserving input order."""
+        if len(states) != len(edge_states):
+            raise ValueError("states and edge_states must have equal length")
+        if not states:
+            return np.empty(0, dtype=np.float32)
+        batch_size = int(batch_size or self.minibatch_size)
+        output = np.empty(len(states), dtype=np.float32)
+        groups = {}
+        for index, (state, edge_state) in enumerate(zip(states, edge_states)):
+            key = (tuple(np.asarray(state).shape), tuple(np.asarray(edge_state).shape))
+            groups.setdefault(key, []).append(index)
+        encoder = self.target_encoder if target else self.encoder
+        value_head = self.target_value_head if target else self.value_head
+        for group in groups.values():
+            for start in range(0, len(group), batch_size):
+                indices = group[start:start + batch_size]
+                prepared = torch.cat([self._prepare_client_state(states[index]) for index in indices], dim=0)
+                edges = torch.cat([self._normalise_edge_state(edge_states[index]) for index in indices], dim=0)
+                values = self._aggregate_token_values(value_head, encoder(prepared, edges))
+                output[indices] = values.detach().cpu().numpy().astype(np.float32, copy=False)
+        return output
+
+    @torch.no_grad()
     def evaluate_bandwidth_prefix_means(
         self, state, edge_state, action, available_migs, decision_order,
     ):
@@ -324,8 +348,18 @@ class MATAgent(BaseAgent):
         rewards = np.asarray(rewards, dtype=np.float32)
         dones = np.asarray(dones, dtype=bool)
         values = np.asarray([info["value"] for info in policy_infos], dtype=np.float32)
-        next_values = np.asarray([0.0 if (done or one_step) else self._target_value(state, edge)
-                                  for state, edge, done in zip(next_states, next_edge_states, dones)], dtype=np.float32)
+        next_values = np.zeros(len(rewards), dtype=np.float32)
+        bootstrap_indices = np.flatnonzero(~dones) if not one_step else np.empty(0, dtype=np.int64)
+        if len(bootstrap_indices):
+            if "_target_value" in self.__dict__:
+                next_values[bootstrap_indices] = np.asarray([
+                    self._target_value(next_states[index], next_edge_states[index])
+                    for index in bootstrap_indices
+                ], dtype=np.float32)
+            else:
+                next_values[bootstrap_indices] = self._batch_values(
+                    [next_states[index] for index in bootstrap_indices],
+                    [next_edge_states[index] for index in bootstrap_indices], target=True)
         td_targets = rewards + self.gamma * next_values * (~dones)
         td_residuals = td_targets - values
         raw_advantages = np.zeros_like(rewards)
@@ -528,7 +562,7 @@ class MATAgent(BaseAgent):
             outputs.append(output)
         return outputs
     def evaluate_critic_targets(self, states, edge_states, targets, station_ids):
-        predictions = np.asarray([self.get_value(s, e) for s, e in zip(states, edge_states)], dtype=np.float64)
+        predictions = self._batch_values(states, edge_states).astype(np.float64, copy=False)
         targets = np.asarray(targets, dtype=np.float64)
         result = {"value_mean": float(predictions.mean()) if len(predictions) else 0.0}
         scaled_losses = []
@@ -583,7 +617,8 @@ class MATAgent(BaseAgent):
         for _ in range(self.ppo_epochs):
             np.random.shuffle(indices)
             self.optimizer.zero_grad(set_to_none=True)
-            epoch_metrics = {key: [] for key in metric_keys}
+            epoch_metric_sums = {key: None for key in metric_keys}
+            epoch_metric_count = 0
             for start in range(0, count, self.minibatch_size):
                 microbatch = indices[start:start + self.minibatch_size]
                 terms = self._microbatch_terms(
@@ -599,7 +634,9 @@ class MATAgent(BaseAgent):
                             component_gradients[component].append(0.0)
                 (torch.stack([item["total_loss"] for item in terms]).sum() / count).backward()
                 for key in metric_keys:
-                    epoch_metrics[key].extend(float(item[key].detach()) for item in terms)
+                    batch_sum = torch.stack([item[key].detach() for item in terms]).sum()
+                    epoch_metric_sums[key] = batch_sum if epoch_metric_sums[key] is None else epoch_metric_sums[key] + batch_sum
+                epoch_metric_count += len(terms)
             groups = {"encoder": list(self.encoder.parameters()), "value_head": list(self.value_head.parameters()),
                       "decoder": list(self.device_decoder.parameters()),
                       "bandwidth_head": list(self.bandwidth_head.parameters()),
@@ -612,8 +649,8 @@ class MATAgent(BaseAgent):
                 module_post[key].append(self._gradient_norm(parameters))
             self.optimizer.step()
             epochs_run += 1
-            for key, values in epoch_metrics.items():
-                diagnostics[key].append(float(np.mean(values)))
+            for key, value_sum in epoch_metric_sums.items():
+                diagnostics[key].append(float((value_sum / epoch_metric_count).item()))
             diagnostics["grad_norm_pre"].append(pre)
             diagnostics["grad_norm_post"].append(post)
             if diagnostics["approx_kl"][-1] > self.target_kl:
@@ -621,8 +658,8 @@ class MATAgent(BaseAgent):
                 break
         target_drift_during_update = max((float((before - after).abs().max()) for before, after in zip(
             target_before, list(self.target_encoder.parameters()) + list(self.target_value_head.parameters()))), default=0.0)
-        updated_values = np.asarray([self.get_value(state, edge) for state, edge in zip(data["states"], data["edge_states"])])
-        old_target_values = np.asarray([self._target_value(state, edge) for state, edge in zip(data["states"], data["edge_states"])])
+        updated_values = self._batch_values(data["states"], data["edge_states"])
+        old_target_values = self._batch_values(data["states"], data["edge_states"], target=True)
         self.update_count += 1
         self.policy_version += 1
         self.sync_target()
