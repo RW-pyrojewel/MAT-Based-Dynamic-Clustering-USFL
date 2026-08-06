@@ -5,74 +5,126 @@ from interfaces.base_agent import BaseAgent
 
 
 class ClusterSFLAgent(BaseAgent):
-    """Re-cluster channel/compute features greedily at every communication round."""
+    """Label-aware worker clustering, top-worker selection and feature compression."""
 
-    _UPLINK_BYTES = np.asarray([262144, 262144, 131072, 65536, 32768, 32768], dtype=np.float64)
+    DEFAULT_PAYLOAD_BYTES = np.asarray(
+        [49152.0, 1048576.0, 1048576.0, 524288.0, 262144.0, 131072.0], dtype=np.float64)
 
-    def __init__(self, num_cut_layers=7, kmeans_iterations=12):
-        super().__init__(agent_name="Adapted-ClusterSFL")
-        if num_cut_layers < 2:
-            raise ValueError("num_cut_layers must be at least two")
+    def __init__(self, num_cut_layers=7, fixed_l1=3, fixed_l2=4,
+                 max_workers_per_cluster=5, minimum_compression_ratio=0.05,
+                 payload_bytes_by_l1=None, max_local_frequency=4):
+        super().__init__(agent_name="PaperAdapted-ClusterSFL")
+        if num_cut_layers < 2 or not 0 <= fixed_l1 < fixed_l2 < num_cut_layers:
+            raise ValueError("invalid fixed ClusterSFL split")
+        if max_workers_per_cluster < 1 or not 0.0 < minimum_compression_ratio <= 1.0:
+            raise ValueError("invalid cluster capacity or compression floor")
+        payloads = self.DEFAULT_PAYLOAD_BYTES if payload_bytes_by_l1 is None else payload_bytes_by_l1
+        self.payload_bytes_by_l1 = np.asarray(payloads, dtype=np.float64)
         self.num_cut_layers = int(num_cut_layers)
-        self.kmeans_iterations = int(kmeans_iterations)
+        self.fixed_l1, self.fixed_l2 = int(fixed_l1), int(fixed_l2)
+        self.max_workers_per_cluster = int(max_workers_per_cluster)
+        self.minimum_compression_ratio = float(minimum_compression_ratio)
+        self.max_local_frequency = int(max_local_frequency)
 
     @staticmethod
-    def _normalise(features):
-        scale = features.std(axis=0, keepdims=True)
-        return (features - features.mean(axis=0, keepdims=True)) / np.maximum(scale, 1e-6)
+    def _distribution(values):
+        values = np.maximum(np.asarray(values, dtype=np.float64), 1e-12)
+        return values / values.sum(axis=-1, keepdims=True)
 
-    def _kmeans(self, features, cluster_count):
-        client_count = len(features)
+    @classmethod
+    def _symmetric_kl(cls, first, second):
+        first, second = cls._distribution(first), cls._distribution(second)
+        return 0.5 * float(np.sum(first * np.log(first / second) + second * np.log(second / first)))
+
+    def _cluster_workers(self, state, cluster_count):
+        labels = self._distribution(state[:, 2:])
+        count = len(state)
         if cluster_count == 1:
-            return np.zeros(client_count, dtype=np.int64)
-        normalised = self._normalise(features)
-        order = np.argsort(normalised[:, 0] + 0.1 * normalised[:, 1], kind="stable")
-        initial = np.linspace(0, client_count - 1, cluster_count, dtype=np.int64)
-        centroids = normalised[order[initial]].copy()
-        labels = np.zeros(client_count, dtype=np.int64)
-        for _ in range(self.kmeans_iterations):
-            distances = ((normalised[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
-            labels = distances.argmin(axis=1)
-            for cluster_id in range(cluster_count):
-                members = labels == cluster_id
-                if members.any():
-                    centroids[cluster_id] = normalised[members].mean(axis=0)
-                else:
-                    farthest = distances.min(axis=1).argmax()
-                    centroids[cluster_id] = normalised[farthest]
-                    labels[farthest] = cluster_id
-        return labels
+            return np.zeros(count, dtype=np.int64)
+        pairwise = np.asarray([[self._symmetric_kl(labels[i], labels[j]) for j in range(count)]
+                               for i in range(count)])
+        seeds = [int(np.argmax(pairwise.mean(axis=1)))]
+        while len(seeds) < cluster_count:
+            distance = np.min(pairwise[:, seeds], axis=1)
+            distance[seeds] = -1.0
+            seeds.append(int(np.argmax(distance)))
+        clusters = np.full(count, -1, dtype=np.int64)
+        for cluster, client in enumerate(seeds):
+            clusters[client] = cluster
+        ideal = np.full(labels.shape[1], 1.0 / labels.shape[1])
+        remaining = [index for index in range(count) if clusters[index] < 0]
+        for client in sorted(remaining, key=lambda index: -pairwise[index, seeds].mean()):
+            costs = np.full(cluster_count, np.inf)
+            for cluster in range(cluster_count):
+                members = np.flatnonzero(clusters == cluster)
+                if len(members) >= self.max_workers_per_cluster:
+                    continue
+                aggregate = labels[np.append(members, client)].mean(axis=0)
+                label_cost = self._symmetric_kl(aggregate, ideal)
+                timing = np.std(1.0 / np.maximum(state[np.append(members, client), 1], 1e-6))
+                costs[cluster] = label_cost + 0.02 * timing
+            clusters[client] = int(np.argmin(costs))
+        return clusters
 
-    def _preferred_pair(self, channel_gain, compute_capacity, client_count, bandwidth_hz):
-        candidate_count = min(self.num_cut_layers - 1, len(self._UPLINK_BYTES))
-        indices = np.arange(candidate_count)
-        spectral_efficiency = np.log2(1.0 + 10.0 * max(float(channel_gain), 1e-6))
-        transmission = self._UPLINK_BYTES[indices] * 8.0 * client_count / max(bandwidth_hz * spectral_efficiency, 1.0)
-        client_compute = (indices + 1.0) / max(float(compute_capacity), 1e-6) * 1e-3
-        l1 = int(np.argmin(transmission + client_compute))
-        return l1, l1 + 1
+    def _compression_and_frequency(self, state, clusters, bandwidth_hz):
+        count = len(state)
+        share = 1.0 / count
+        efficiency = np.maximum(np.log2(1.0 + 10.0 * np.maximum(state[:, 0], 0.0)), 1e-9)
+        compute = 1e-3 * (self.fixed_l1 + 1.0) / np.maximum(state[:, 1], 1e-6)
+        tx_full = (8.0 * self.payload_bytes_by_l1[self.fixed_l1]
+                   / np.maximum(share * bandwidth_hz * efficiency, 1e-12))
+        ratios = np.ones(count, dtype=np.float64)
+        cluster_time = {}
+        for cluster in np.unique(clusters):
+            members = np.flatnonzero(clusters == cluster)
+            target = float(np.min(compute[members] + tx_full[members]))
+            ratios[members] = np.clip(
+                (target - compute[members]) / np.maximum(tx_full[members], 1e-12),
+                self.minimum_compression_ratio, 1.0)
+            cluster_time[int(cluster)] = float(np.max(compute[members] + ratios[members] * tx_full[members]))
+        slowest = max(cluster_time.values())
+        frequency = {cluster: int(np.clip(np.floor(slowest / max(delay, 1e-12)), 1,
+                                          self.max_local_frequency))
+                     for cluster, delay in cluster_time.items()}
+        return ratios, frequency, cluster_time
 
-    def act(self, active_clients_state, available_migs, edge_state=None, deterministic=True):
+    def act(self, active_clients_state, available_migs, edge_state=None, deterministic=True,
+            data_volumes=None, **_):
         state = np.asarray(active_clients_state, dtype=np.float64)
-        client_count = len(state)
-        if client_count == 0 or available_migs < 1:
-            raise ValueError("ClusterSFL requires at least one client and one available MIG")
-        cluster_count = min(client_count, int(available_migs))
-        clusters = self._kmeans(state[:, :2], cluster_count)
+        count = len(state)
+        if state.ndim != 2 or state.shape[1] < 3 or count == 0 or available_migs < 1:
+            raise ValueError("ClusterSFL requires channel, compute and label state")
+        desired = int(np.ceil(count / self.max_workers_per_cluster))
+        cluster_count = min(desired, int(available_migs), count)
+        clusters = self._cluster_workers(state, cluster_count)
         bandwidth_hz = float(edge_state[1]) if edge_state is not None else 1.0
-        l1 = np.empty(client_count, dtype=np.int64)
-        l2 = np.empty(client_count, dtype=np.int64)
-        for cluster_id in range(cluster_count):
-            members = np.flatnonzero(clusters == cluster_id)
-            bottleneck = members[np.argmin(state[members, 0])]
-            pair = self._preferred_pair(state[bottleneck, 0], state[bottleneck, 1], client_count, bandwidth_hz)
-            l1[members], l2[members] = pair
+        ratios, frequencies, cluster_times = self._compression_and_frequency(state, clusters, bandwidth_hz)
+        top_workers = np.zeros(count, dtype=bool)
+        for cluster in np.unique(clusters):
+            members = np.flatnonzero(clusters == cluster)
+            top_workers[members[np.argmax(state[members, 0])]] = True
+        volumes = np.ones(count, dtype=np.float64) if data_volumes is None else np.asarray(data_volumes, dtype=np.float64)
+        aggregation = np.asarray([
+            volumes[index] * frequencies[int(clusters[index])] for index in range(count)], dtype=np.float64)
+        cloud_mass = float(aggregation.sum())
+        aggregation /= max(aggregation.sum(), 1e-12)
         return {
             "cluster": clusters,
-            "l1": l1,
-            "l2": l2,
-            "bw": np.full(client_count, 1.0 / client_count, dtype=np.float64),
-        }, None
+            "virtual_cluster": clusters.copy(),
+            "l1": np.full(count, self.fixed_l1, dtype=np.int64),
+            "l2": np.full(count, self.fixed_l2, dtype=np.int64),
+            "bw": np.full(count, 1.0 / count, dtype=np.float64),
+            "feature_compression": ratios,
+            "top_worker": top_workers,
+            "local_update_frequency": frequencies,
+            "aggregation_weight": aggregation,
+            "cloud_aggregation_mass": cloud_mass,
+        }, {
+            "paper_algorithm": "ClusterSFL-KL/top-worker/compression/local-frequency",
+            "feature_compression_mean": float(ratios.mean()),
+            "top_worker_count": int(top_workers.sum()),
+            "cluster_completion_proxy": float(max(cluster_times.values())),
+        }
 
     def step(self, active_clients_state, available_migs):
         action, _ = self.act(active_clients_state, available_migs)

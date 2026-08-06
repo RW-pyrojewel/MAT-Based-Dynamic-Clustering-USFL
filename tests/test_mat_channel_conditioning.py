@@ -50,7 +50,8 @@ class MATChannelConditioningTests(unittest.TestCase):
                 correlations.append(spearman_correlation(np.arange(10, dtype=float), mean_channel))
         self.assertLess(max(abs(value) for value in correlations), 0.40)
     def test_channel_sidecar_has_gradient_and_counterfactual_response(self):
-        agent = MATAgent(state_dim=6, hidden_dim=32, channel_conditioning="explicit")
+        agent = MATAgent(state_dim=6, hidden_dim=32, channel_conditioning="explicit",
+                         bandwidth_policy="joint_dirichlet")
         action, info = agent.act(
             self.state, 3, self.edge, client_ids=np.arange(10), deterministic=True
         )
@@ -103,6 +104,7 @@ class MATChannelConditioningTests(unittest.TestCase):
             hidden_dim=32,
             channel_conditioning="explicit",
             component_balanced_ppo=True,
+            bandwidth_policy="joint_dirichlet",
         )
         agent.policy_version = 4
         agent.update_count = 3
@@ -133,7 +135,7 @@ class MATChannelConditioningTests(unittest.TestCase):
         self.assertTrue(all(not parameter.requires_grad for parameter in loaded.target_encoder.parameters()))
 
     def test_joint_dirichlet_constraints_masking_and_order_invariance(self):
-        agent = MATAgent(state_dim=6, hidden_dim=32)
+        agent = MATAgent(state_dim=6, hidden_dim=32, bandwidth_policy="joint_dirichlet")
         action, info = agent.act(self.state, 3, self.edge, deterministic=True)
         self.assertAlmostEqual(float(action["bw"].sum()), 1.0, places=6)
         self.assertGreaterEqual(float(action["bw"].min()), 0.01)
@@ -158,7 +160,8 @@ class MATChannelConditioningTests(unittest.TestCase):
         self.assertAlmostEqual(float(action["bw"].sum()), 1.0, places=6)
 
     def test_bandwidth_only_one_step_does_not_update_cluster_or_split_heads(self):
-        agent = MATAgent(state_dim=6, hidden_dim=32, ppo_epochs=1, minibatch_size=1)
+        agent = MATAgent(state_dim=6, hidden_dim=32, ppo_epochs=1, minibatch_size=1,
+                         bandwidth_policy="joint_dirichlet")
         action, info = agent.act(self.state, 3, self.edge)
         buffer = MATTrajectoryBuffer()
         buffer.append(self.state, self.edge, action, -1.0, self.state, self.edge, False,
@@ -182,6 +185,7 @@ class MATChannelConditioningTests(unittest.TestCase):
             ppo_epochs=1,
             minibatch_size=1,
             component_balanced_ppo=True,
+            bandwidth_policy="joint_dirichlet",
         )
         action, info = agent.act(self.state, 3, self.edge)
         buffer = MATTrajectoryBuffer()

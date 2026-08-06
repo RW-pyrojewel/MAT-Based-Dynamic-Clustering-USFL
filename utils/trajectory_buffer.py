@@ -29,7 +29,8 @@ class MATTrajectoryBuffer:
         "decision_order", "cluster_log_probs", "bandwidth_log_probs", "bandwidth_mask",
         "split_log_probs", "split_mask", "value", "device_entropy", "cluster_entropy",
         "bandwidth_entropy", "bandwidth_latent_means", "bandwidth_alpha",
-        "bandwidth_context_scores", "bandwidth_physical_scores", "bandwidth_physical_features", "split_entropy",
+        "bandwidth_context_scores", "bandwidth_physical_scores", "bandwidth_physical_features",
+        "split_conditioning_bandwidth", "split_entropy",
     }
 
     def __init__(self):
@@ -58,7 +59,7 @@ class MATTrajectoryBuffer:
             raise ValueError("decision_order must be a permutation of active clients")
         for key in ("cluster_log_probs", "device_entropy", "cluster_entropy", "bandwidth_latent_means",
                     "bandwidth_alpha", "bandwidth_context_scores", "bandwidth_physical_scores",
-                    "bandwidth_physical_features"):
+                    "bandwidth_physical_features", "split_conditioning_bandwidth"):
             if copied[key].shape != (client_count,):
                 raise ValueError(f"{key} must have shape (N,)")
         bandwidth_size = copied["bandwidth_log_probs"].shape

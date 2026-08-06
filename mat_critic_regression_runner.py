@@ -106,7 +106,7 @@ def run_critic_regression(
     agent = MATAgent(
         state_dim=2 + provider.num_classes, hidden_dim=hidden_dim, ppo_epochs=ppo_epochs,
         minibatch_size=minibatch_size, max_grad_norm=0.5, target_kl=0.03,
-        device=execution_device,
+        bandwidth_policy="joint_dirichlet", device=execution_device,
     )
     train_rng = np.random.default_rng(seed + 1000)
     holdout_rng = np.random.default_rng(seed + 2000)

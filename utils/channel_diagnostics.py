@@ -74,6 +74,44 @@ def oracle_bandwidth(required_airtimes, min_share=0.01):
     return allocation / allocation.sum()
 
 
+def offset_aware_oracle_bandwidth(required_airtimes, cluster_choices, cluster_compute_delays,
+                                  bandwidth_hz, min_share=0.01, iterations=96):
+    """Minimize max_i(compute[cluster_i] + airtime_i / (B * bandwidth_i))."""
+    costs = np.asarray(required_airtimes, dtype=np.float64)
+    clusters = np.asarray(cluster_choices, dtype=np.int64)
+    if costs.ndim != 1 or clusters.shape != costs.shape or len(costs) == 0:
+        raise ValueError("airtimes and cluster choices must be matching non-empty vectors")
+    if not np.isfinite(costs).all() or (costs < 0.0).any() or bandwidth_hz <= 0.0:
+        raise ValueError("airtimes must be finite/non-negative and bandwidth_hz positive")
+    if min_share < 0.0 or len(costs) * min_share >= 1.0:
+        raise ValueError("minimum bandwidth share is infeasible")
+    compute = np.asarray([float(cluster_compute_delays.get(int(cluster), 0.0)) for cluster in clusters], dtype=np.float64)
+    if not np.isfinite(compute).all() or (compute < 0.0).any():
+        raise ValueError("cluster compute delays must be finite and non-negative")
+    equal = np.full(len(costs), 1.0 / len(costs), dtype=np.float64)
+    if costs.sum() <= 1e-15:
+        return equal
+    low = float(compute.max())
+    high = float(np.max(compute + costs / (float(bandwidth_hz) * equal)))
+    tiny = np.finfo(np.float64).tiny
+    for _ in range(int(iterations)):
+        threshold = 0.5 * (low + high)
+        denominators = float(bandwidth_hz) * np.maximum(threshold - compute, tiny)
+        allocation = np.maximum(min_share, costs / denominators)
+        if allocation.sum() > 1.0:
+            low = threshold
+        else:
+            high = threshold
+    denominators = float(bandwidth_hz) * np.maximum(high - compute, tiny)
+    allocation = np.maximum(min_share, costs / denominators)
+    residual = max(1.0 - float(allocation.sum()), 0.0)
+    if residual:
+        allocation += residual * costs / max(float(costs.sum()), tiny)
+    allocation /= allocation.sum()
+    if (allocation < min_share - 1e-10).any() or not np.isfinite(allocation).all():
+        raise FloatingPointError("offset-aware water filling produced an invalid allocation")
+    return allocation
+
 def max_transmission_delay(required_airtimes, bandwidth_shares, bandwidth_hz):
     costs = np.asarray(required_airtimes, dtype=np.float64)
     shares = np.asarray(bandwidth_shares, dtype=np.float64)

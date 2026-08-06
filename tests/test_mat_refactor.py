@@ -6,6 +6,7 @@ import torch
 
 from models.mat_agent import MATAgent
 from models.mat_components import CausalDeviceDecoder, ClusterSplitHead
+from scenario_a_runner import _append_transition, _flush_ppo
 from utils.mat_reward import MATRewardConfig, compute_mat_reward
 from utils.trajectory_buffer import MATTrajectoryBuffer
 
@@ -230,6 +231,51 @@ class MATRefactorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             buffer.append(self.state, self.edge, action, 0.0, self.state, self.edge, True, info, 2, 1, 2,
                           trajectory_id=(0, 1), policy_version=1)
+
+    def test_online_rollover_flushes_closed_policy_before_new_actions(self):
+        agent = MATAgent(state_dim=102, hidden_dim=32, device="cpu", ppo_epochs=1, minibatch_size=3)
+        buffer = MATTrajectoryBuffer()
+        pending = {}
+        for station in (1, 2, 3):
+            action, info = agent.act(self.state, 2, self.edge)
+            pending[station] = {
+                "state": self.state, "edge_state": self.edge, "action": action, "reward": -0.5,
+                "policy_info": info, "available_migs": 2, "epoch": 6, "policy_version": 0,
+            }
+        for station, previous in pending.items():
+            _append_transition(agent, buffer, previous, self.state, self.edge, False, station, 7)
+        self.assertEqual(buffer.policy_version, 0)
+        _flush_ppo(agent, buffer)
+        self.assertEqual(agent.policy_version, 1)
+        self.assertEqual(len(buffer), 0)
+        action, info = agent.act(self.state, 2, self.edge)
+        current = {"state": self.state, "edge_state": self.edge, "action": action, "reward": -0.4,
+                   "policy_info": info, "available_migs": 2, "epoch": 7, "policy_version": 1}
+        _append_transition(agent, buffer, current, self.state, self.edge, False, 1, 8)
+        self.assertEqual(buffer.policy_version, 1)
+
+    def test_mixed_mig_microbatch_grouping_matches_sequential_evaluation(self):
+        agent = MATAgent(state_dim=102, hidden_dim=16, device="cpu", ppo_epochs=1)
+        states, actions, edges, migs, infos = [], [], [], [], []
+        for index in range(32):
+            mig = 2 if index < 16 else 3
+            edge = np.asarray([float(mig), 100e6], dtype=np.float32)
+            action, info = agent.act(self.state, mig, edge)
+            states.append(self.state)
+            actions.append(action)
+            edges.append(edge)
+            migs.append(mig)
+            infos.append(info)
+        advantages = torch.linspace(-1.0, 1.0, 32)
+        targets = torch.linspace(-0.5, 0.5, 32)
+        agent._active_actor_components = frozenset(("cluster", "split"))
+        grouped = agent._microbatch_terms(
+            range(32), states, actions, edges, migs, infos, advantages, targets)
+        sequential = [agent._sample_terms(
+            index, states, actions, edges, migs, infos, advantages, targets) for index in range(32)]
+        for left, right in zip(grouped, sequential):
+            for key in ("total_loss", "policy_loss", "value_loss", "approx_kl"):
+                torch.testing.assert_close(left[key], right[key], atol=2e-6, rtol=2e-5)
 
     def test_full_batch_gradient_accumulation_matches_direct_batch(self):
         base = MATAgent(state_dim=102, hidden_dim=32, device="cpu", ppo_epochs=1, minibatch_size=2)

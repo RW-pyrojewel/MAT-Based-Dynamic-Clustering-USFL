@@ -1,0 +1,674 @@
+{
+  "7": {
+    "initial": {
+      "2": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 1.96875,
+          "mean_l1": 2.996875,
+          "mean_l2": 5.15,
+          "estimated_payload_bytes_per_client": 522496.0
+        }
+      },
+      "5": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 4.40625,
+          "mean_l1": 2.796875,
+          "mean_l2": 4.809375,
+          "estimated_payload_bytes_per_client": 555724.8
+        }
+      },
+      "7": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 5.25,
+          "mean_l1": 2.959375,
+          "mean_l2": 4.840625,
+          "estimated_payload_bytes_per_client": 530380.8
+        }
+      }
+    },
+    "snapshots": {
+      "99": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.90625,
+            "mean_l1": 3.86875,
+            "mean_l2": 5.590625,
+            "estimated_payload_bytes_per_client": 369868.8
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.28125,
+            "mean_l1": 3.58125,
+            "mean_l2": 5.55625,
+            "estimated_payload_bytes_per_client": 431206.4
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 5.34375,
+            "mean_l1": 3.4375,
+            "mean_l2": 5.471875,
+            "estimated_payload_bytes_per_client": 418406.4
+          }
+        }
+      },
+      "104": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.875,
+            "mean_l1": 3.58125,
+            "mean_l2": 5.6625,
+            "estimated_payload_bytes_per_client": 382924.8
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.125,
+            "mean_l1": 3.734375,
+            "mean_l2": 5.709375,
+            "estimated_payload_bytes_per_client": 388198.4
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 2.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.96875,
+            "mean_l1": 3.753125,
+            "mean_l2": 5.63125,
+            "estimated_payload_bytes_per_client": 383846.4
+          }
+        }
+      },
+      "119": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.875,
+            "mean_l1": 3.70625,
+            "mean_l2": 5.64375,
+            "estimated_payload_bytes_per_client": 410419.2
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.15625,
+            "mean_l1": 3.509375,
+            "mean_l2": 5.51875,
+            "estimated_payload_bytes_per_client": 426444.8
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.65625,
+            "mean_l1": 3.559375,
+            "mean_l2": 5.596875,
+            "estimated_payload_bytes_per_client": 421017.6
+          }
+        }
+      },
+      "150": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.625,
+            "mean_l1": 4.28125,
+            "mean_l2": 5.665625,
+            "estimated_payload_bytes_per_client": 274944.0
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 3.8125,
+            "mean_l1": 4.028125,
+            "mean_l2": 5.515625,
+            "estimated_payload_bytes_per_client": 294297.6
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 5.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 131072.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.9375,
+            "mean_l1": 4.225,
+            "mean_l2": 5.709375,
+            "estimated_payload_bytes_per_client": 268697.6
+          }
+        }
+      }
+    }
+  },
+  "17": {
+    "initial": {
+      "2": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 1.8125,
+          "mean_l1": 2.709375,
+          "mean_l2": 4.996875,
+          "estimated_payload_bytes_per_client": 584345.6
+        }
+      },
+      "5": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 4.25,
+          "mean_l1": 2.959375,
+          "mean_l2": 4.959375,
+          "estimated_payload_bytes_per_client": 522598.4
+        }
+      },
+      "7": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 5.25,
+          "mean_l1": 3.06875,
+          "mean_l2": 4.890625,
+          "estimated_payload_bytes_per_client": 555366.4
+        }
+      }
+    },
+    "snapshots": {
+      "99": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.75,
+            "mean_l1": 3.05625,
+            "mean_l2": 5.053125,
+            "estimated_payload_bytes_per_client": 555827.2
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.125,
+            "mean_l1": 3.353125,
+            "mean_l2": 5.01875,
+            "estimated_payload_bytes_per_client": 475136.0
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.96875,
+            "mean_l1": 3.109375,
+            "mean_l2": 4.80625,
+            "estimated_payload_bytes_per_client": 502988.8
+          }
+        }
+      },
+      "104": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.90625,
+            "mean_l1": 3.43125,
+            "mean_l2": 4.88125,
+            "estimated_payload_bytes_per_client": 450150.4
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.125,
+            "mean_l1": 3.4,
+            "mean_l2": 5.078125,
+            "estimated_payload_bytes_per_client": 473088.0
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.96875,
+            "mean_l1": 3.165625,
+            "mean_l2": 4.965625,
+            "estimated_payload_bytes_per_client": 509030.4
+          }
+        }
+      },
+      "119": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.875,
+            "mean_l1": 3.359375,
+            "mean_l2": 4.975,
+            "estimated_payload_bytes_per_client": 485376.0
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.09375,
+            "mean_l1": 3.1375,
+            "mean_l2": 4.809375,
+            "estimated_payload_bytes_per_client": 509491.2
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.65625,
+            "mean_l1": 3.171875,
+            "mean_l2": 4.85,
+            "estimated_payload_bytes_per_client": 512204.8
+          }
+        }
+      },
+      "150": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.65625,
+            "mean_l1": 3.0125,
+            "mean_l2": 4.815625,
+            "estimated_payload_bytes_per_client": 512409.6
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.0,
+            "mean_l1": 3.109375,
+            "mean_l2": 4.928125,
+            "estimated_payload_bytes_per_client": 524595.2
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 5.0,
+            "mean_l1": 3.309375,
+            "mean_l2": 4.9875,
+            "estimated_payload_bytes_per_client": 487577.6
+          }
+        }
+      }
+    }
+  },
+  "29": {
+    "initial": {
+      "2": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 1.84375,
+          "mean_l1": 2.853125,
+          "mean_l2": 4.65625,
+          "estimated_payload_bytes_per_client": 590643.2
+        }
+      },
+      "5": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 4.125,
+          "mean_l1": 3.003125,
+          "mean_l2": 4.765625,
+          "estimated_payload_bytes_per_client": 565043.2
+        }
+      },
+      "7": {
+        "deterministic": {
+          "physical_cluster_count": 1.0,
+          "mean_l1": 3.0,
+          "mean_l2": 4.0,
+          "estimated_payload_bytes_per_client": 524288.0
+        },
+        "stochastic": {
+          "physical_cluster_count": 5.21875,
+          "mean_l1": 2.85,
+          "mean_l2": 4.978125,
+          "estimated_payload_bytes_per_client": 559667.2
+        }
+      }
+    },
+    "snapshots": {
+      "99": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.96875,
+            "mean_l1": 3.3,
+            "mean_l2": 5.178125,
+            "estimated_payload_bytes_per_client": 426803.2
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 3.9375,
+            "mean_l1": 3.1,
+            "mean_l2": 5.04375,
+            "estimated_payload_bytes_per_client": 526643.2
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 5.4375,
+            "mean_l1": 3.3875,
+            "mean_l2": 5.096875,
+            "estimated_payload_bytes_per_client": 464896.0
+          }
+        }
+      },
+      "104": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 2.0,
+            "mean_l1": 3.146875,
+            "mean_l2": 4.69375,
+            "estimated_payload_bytes_per_client": 512819.2
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.15625,
+            "mean_l1": 2.996875,
+            "mean_l2": 4.5875,
+            "estimated_payload_bytes_per_client": 534425.6
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.84375,
+            "mean_l1": 3.0375,
+            "mean_l2": 4.925,
+            "estimated_payload_bytes_per_client": 494233.6
+          }
+        }
+      },
+      "119": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 2.0,
+            "mean_l1": 2.609375,
+            "mean_l2": 4.446875,
+            "estimated_payload_bytes_per_client": 575539.2
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.15625,
+            "mean_l1": 2.8125,
+            "mean_l2": 4.75,
+            "estimated_payload_bytes_per_client": 517683.2
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 4.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.78125,
+            "mean_l1": 2.921875,
+            "mean_l2": 4.809375,
+            "estimated_payload_bytes_per_client": 540518.4
+          }
+        }
+      },
+      "150": {
+        "2": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 1.75,
+            "mean_l1": 2.95,
+            "mean_l2": 5.278125,
+            "estimated_payload_bytes_per_client": 460595.2
+          }
+        },
+        "5": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.125,
+            "mean_l1": 2.646875,
+            "mean_l2": 4.9125,
+            "estimated_payload_bytes_per_client": 546201.6
+          }
+        },
+        "7": {
+          "deterministic": {
+            "physical_cluster_count": 1.0,
+            "mean_l1": 3.0,
+            "mean_l2": 6.0,
+            "estimated_payload_bytes_per_client": 524288.0
+          },
+          "stochastic": {
+            "physical_cluster_count": 4.71875,
+            "mean_l1": 2.8125,
+            "mean_l2": 5.225,
+            "estimated_payload_bytes_per_client": 568473.6
+          }
+        }
+      }
+    }
+  }
+}
