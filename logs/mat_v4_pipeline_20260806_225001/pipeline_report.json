@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "status": "completed",
+  "started_at": "2026-08-06T22:50:01.774523",
+  "python": "/home/lqs/.pyenv/versions/mat/bin/python",
+  "pipeline_root": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001",
+  "stages": {
+    "01_development_seed41": {
+      "command": [
+        "/home/lqs/.pyenv/versions/mat/bin/python",
+        "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/mat_physics_guided_online_runner.py",
+        "--mode",
+        "development",
+        "--data-dir",
+        "../Data",
+        "--log-dir",
+        "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001",
+        "--device",
+        "cuda",
+        "--batch-size",
+        "16",
+        "--local-steps",
+        "4",
+        "--evaluation-batches",
+        "10",
+        "--ppo-update-interval",
+        "48"
+      ],
+      "log": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/01_development_seed41.log",
+      "return_code": 0,
+      "result_root": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/mat_physics_guided_v4_development_20260806_225004",
+      "report": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/mat_physics_guided_v4_development_20260806_225004/mat_v4_report.json",
+      "passed": true
+    },
+    "02_baseline_cache": {
+      "command": [
+        "/home/lqs/.pyenv/versions/mat/bin/python",
+        "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/scenario_a_baseline_cache_runner.py",
+        "--data-dir",
+        "../Data",
+        "--log-dir",
+        "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001",
+        "--device",
+        "cuda",
+        "--batch-size",
+        "16",
+        "--local-steps",
+        "4",
+        "--evaluation-batches",
+        "10"
+      ],
+      "log": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/02_baseline_cache.log",
+      "return_code": 0,
+      "result_root": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/scenario_a_baselines_v4_1a77c0704e7c93fe_20260806_225444",
+      "report": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/scenario_a_baselines_v4_1a77c0704e7c93fe_20260806_225444/baseline_contract_report.json",
+      "completed": true,
+      "contract_hash": "1a77c0704e7c93fe"
+    },
+    "03_formal_mat_and_physics_only": {
+      "command": [
+        "/home/lqs/.pyenv/versions/mat/bin/python",
+        "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/mat_physics_guided_online_runner.py",
+        "--mode",
+        "formal",
+        "--baseline-report",
+        "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/scenario_a_baselines_v4_1a77c0704e7c93fe_20260806_225444/baseline_contract_report.json",
+        "--data-dir",
+        "../Data",
+        "--log-dir",
+        "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001",
+        "--device",
+        "cuda",
+        "--batch-size",
+        "16",
+        "--local-steps",
+        "4",
+        "--evaluation-batches",
+        "10",
+        "--ppo-update-interval",
+        "48"
+      ],
+      "log": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/03_formal_mat_and_physics_only.log",
+      "return_code": 0,
+      "result_root": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/mat_physics_guided_v4_formal_20260806_234235",
+      "report": "/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/mat_physics_guided_v4_formal_20260806_234235/mat_v4_report.json",
+      "passed": false,
+      "gates": {
+        "numerically_stable": true,
+        "fixed_150_round_budget": true,
+        "single_step_credit": true,
+        "beats_baseline_by_10pct": false,
+        "beats_baseline_each_seed": false,
+        "baseline_bootstrap_lower_positive": false,
+        "beats_physics_only_by_3pct": false,
+        "beats_physics_only_two_seeds": false,
+        "accuracy_within_two_points": true
+      }
+    }
+  },
+  "passed": false,
+  "finished_at": "2026-08-07T00:07:30.226840"
+}

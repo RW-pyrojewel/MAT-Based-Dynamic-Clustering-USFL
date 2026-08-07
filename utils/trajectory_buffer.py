@@ -31,6 +31,8 @@ class MATTrajectoryBuffer:
         "bandwidth_entropy", "bandwidth_latent_means", "bandwidth_alpha",
         "bandwidth_context_scores", "bandwidth_physical_scores", "bandwidth_physical_features",
         "split_conditioning_bandwidth", "split_entropy",
+        "cluster_prior_scores", "cluster_workload_costs", "split_prior_logits",
+        "split_predicted_delays", "split_action_ids",
     }
 
     def __init__(self):
@@ -71,6 +73,17 @@ class MATTrajectoryBuffer:
         for key in ("split_log_probs", "split_mask", "split_entropy"):
             if copied[key].ndim != 1 or len(copied[key]) < available_migs:
                 raise ValueError(f"{key} must cover every available MIG")
+        if copied["cluster_prior_scores"].ndim != 2 or copied["cluster_prior_scores"].shape[0] != client_count:
+            raise ValueError("cluster_prior_scores must have shape (N, num_migs)")
+        if copied["cluster_workload_costs"].ndim != 1 or len(copied["cluster_workload_costs"]) <= client_count:
+            raise ValueError("cluster_workload_costs must cover every possible active-client count")
+        split_shape = copied["split_prior_logits"].shape
+        if len(split_shape) != 2 or split_shape[0] < available_migs:
+            raise ValueError("split_prior_logits must cover every available MIG and split pair")
+        if copied["split_predicted_delays"].shape != split_shape:
+            raise ValueError("split predicted delays must match split prior logits")
+        if copied["split_action_ids"].shape != (split_shape[0],):
+            raise ValueError("split_action_ids must cover every split slot")
         if not np.isfinite(copied["value"]):
             raise ValueError("rollout value must be finite")
         return copied

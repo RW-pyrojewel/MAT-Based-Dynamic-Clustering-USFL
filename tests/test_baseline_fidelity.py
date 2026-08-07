@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from baselines import CPSLAgent, ClusterSFLAgent, PCSFLAgent
 from scenario_a_runner import (
-    _compress_feature_tensor, _fedavg, _model_pca_embedding, _run_clustersfl_round,
+    _act, _compress_feature_tensor, _fedavg, _model_pca_embedding, _run_clustersfl_round,
     _run_pcsfl_round,
 )
 
@@ -70,6 +70,7 @@ class BaselineFidelityTests(unittest.TestCase):
         self.assertIn("Gibbs", info["paper_algorithm"])
         calibration = agent.calibrate_split([state], [100e6])
         self.assertEqual(calibration["sample_count"], 1)
+        self.assertGreaterEqual(calibration["selected_l1"], 1)
         self.assertEqual(agent.fixed_l2, agent.fixed_l1 + 1)
 
     def test_clustersfl_keeps_fixed_split_and_exposes_paper_controls(self):
@@ -84,6 +85,22 @@ class BaselineFidelityTests(unittest.TestCase):
         self.assertTrue(np.all((action["feature_compression"] >= 0.05)
                                & (action["feature_compression"] <= 1.0)))
         self.assertAlmostEqual(float(action["aggregation_weight"].sum()), 1.0)
+        np.testing.assert_allclose(action["aggregation_weight"], np.full(10, 0.1))
+
+    def test_every_controller_keeps_both_client_parts_nonempty(self):
+        state = synthetic_state()
+        edge = np.asarray([3, 100e6])
+        agents = (
+            CPSLAgent(seed=1, gibbs_iterations=1),
+            ClusterSFLAgent(),
+            PCSFLAgent(state_dim=102, max_clients=10, max_migs=7),
+        )
+        for agent in agents:
+            context = {"data_volumes": np.ones(10), "model_embedding": np.zeros((10, 8))}
+            action, _ = _act(agent, state, 3, edge, True, baseline_context=context)
+            self.assertTrue(np.all(action["l1"] >= 1))
+            self.assertTrue(np.all(action["l2"] <= 6))
+        self.assertTrue(all(1 <= l1 < l2 <= 6 for l1, l2 in agents[-1].split_pairs))
 
     def test_real_topk_compression_changes_payload_and_is_finite(self):
         tensor = torch.arange(1.0, 101.0, requires_grad=True)
@@ -118,6 +135,13 @@ class BaselineFidelityTests(unittest.TestCase):
             model, optimizer, TinyProvider(), {"batch_size": 2}, np.arange(4), action,
             torch.device("cpu"), local_steps=1, learning_rate=0.01)
         self.assertEqual(result["smashed_sizes"].shape, (4,))
+        self.assertEqual(result["pcsfl_execution_group_count"], 2)
+        np.testing.assert_allclose(result["activation_l1_bytes"], 48.0)
+        np.testing.assert_allclose(result["activation_l2_bytes"], 48.0)
+        np.testing.assert_allclose(result["gradient_l2_bytes"], result["activation_l2_bytes"])
+        np.testing.assert_allclose(
+            result["uplink_payload_bytes"],
+            result["activation_l1_bytes"] + result["gradient_l2_bytes"])
         self.assertTrue(np.isfinite(result["pcsfl_clustering_factor"]))
         self.assertTrue(any(not torch.equal(before[key], model.state_dict()[key]) for key in before))
 
@@ -138,7 +162,12 @@ class BaselineFidelityTests(unittest.TestCase):
             model, optimizer, TinyProvider(), {"batch_size": 2}, np.arange(4), action,
             torch.device("cpu"), local_steps=2, learning_rate=0.01)
         self.assertTrue(np.all(result["smashed_sizes"] > 0.0))
+        np.testing.assert_allclose(result["gradient_l1_bytes"], result["activation_l1_bytes"])
+        np.testing.assert_allclose(result["gradient_l2_bytes"], result["activation_l2_bytes"])
         self.assertTrue(np.isfinite(result["train_loss"]))
+        self.assertEqual(result["client_local_steps"], 2)
+        self.assertEqual(result["paper_frequency_mean"], 1.0)
+        self.assertTrue(all("momentum_buffer" in state for state in optimizer.state.values()))
         self.assertTrue(any(not torch.equal(before[key], model.state_dict()[key]) for key in before))
 
     def test_weighted_cloud_aggregation_and_model_pca_are_finite(self):
@@ -150,9 +179,15 @@ class BaselineFidelityTests(unittest.TestCase):
                 parameter.fill_(2.0)
         optimizers = [torch.optim.SGD(first.parameters(), lr=0.1),
                       torch.optim.SGD(second.parameters(), lr=0.1)]
+        for model, optimizer, momentum in zip((first, second), optimizers, (1.0, 3.0)):
+            for parameter in model.parameters():
+                optimizer.state[parameter]["momentum_buffer"] = torch.full_like(parameter, momentum)
         _fedavg([first, second], optimizers, weights=[1.0, 3.0])
         for parameter in first.parameters():
             np.testing.assert_allclose(parameter.detach().numpy(), 1.5)
+        for optimizer in optimizers:
+            for state in optimizer.state.values():
+                np.testing.assert_allclose(state["momentum_buffer"].numpy(), 2.5)
         embedding = _model_pca_embedding(first, dimensions=8)
         self.assertEqual(embedding.shape, (8,))
         self.assertTrue(np.isfinite(embedding).all())

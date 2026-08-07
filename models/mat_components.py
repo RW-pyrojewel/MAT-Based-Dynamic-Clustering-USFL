@@ -314,8 +314,8 @@ class ClusterSplitHead(nn.Module):
 
     def __init__(self, hidden_dim, num_migs, num_cut_layers, num_heads=4):
         super().__init__()
-        if num_cut_layers < 2:
-            raise ValueError("num_cut_layers must be at least two")
+        if num_cut_layers < 3:
+            raise ValueError("num_cut_layers must be at least three so Part A/C stay non-empty")
         self.num_migs = int(num_migs)
         self.num_cut_layers = int(num_cut_layers)
         self.cluster_tokens = nn.Parameter(torch.empty(num_migs, hidden_dim))
@@ -341,8 +341,8 @@ class ClusterSplitHead(nn.Module):
 
     def act(self, encoded_states, clusters, bandwidths, deterministic=False):
         batch_size, client_count, _ = encoded_states.shape
-        l1_all = torch.zeros((batch_size, client_count), dtype=torch.long, device=encoded_states.device)
-        l2_all = torch.ones((batch_size, client_count), dtype=torch.long, device=encoded_states.device)
+        l1_all = torch.ones((batch_size, client_count), dtype=torch.long, device=encoded_states.device)
+        l2_all = torch.full((batch_size, client_count), 2, dtype=torch.long, device=encoded_states.device)
         split_log_probs = encoded_states.new_zeros((batch_size, self.num_migs))
         split_entropies = encoded_states.new_zeros((batch_size, self.num_migs))
         split_mask = torch.zeros((batch_size, self.num_migs), dtype=torch.bool, device=encoded_states.device)
@@ -350,7 +350,8 @@ class ClusterSplitHead(nn.Module):
             context, present = self._cluster_context(encoded_states, clusters, bandwidths, mig_id)
             if not present.any():
                 continue
-            l1_dist = Categorical(logits=self.l1_head(context))
+            legal_l1 = torch.arange(self.num_cut_layers - 1, device=encoded_states.device).unsqueeze(0) >= 1
+            l1_dist = Categorical(logits=self.l1_head(context).masked_fill(~legal_l1, -torch.inf))
             l1 = l1_dist.probs.argmax(-1) if deterministic else l1_dist.sample()
             valid_l2 = torch.arange(self.num_cut_layers, device=encoded_states.device).unsqueeze(0) > l1.unsqueeze(1)
             l2_dist = Categorical(logits=self.l2_head(context).masked_fill(~valid_l2, -torch.inf))
@@ -380,7 +381,14 @@ class ClusterSplitHead(nn.Module):
                 raise ValueError("all clients in a cluster must share l1")
             if torch.any(torch.where(members, l2, selected_l2.unsqueeze(1)) != selected_l2.unsqueeze(1)):
                 raise ValueError("all clients in a cluster must share l2")
-            l1_dist = Categorical(logits=self.l1_head(context))
+            if torch.any(present & ((selected_l1 < 1) | (selected_l2 >= self.num_cut_layers))):
+                raise ValueError("split pair must keep both client-side model parts non-empty")
+            # Absent clusters are masked downstream, but still require finite
+            # placeholder log-probabilities (avoid -inf * 0 -> NaN).
+            selected_l1 = torch.where(present, selected_l1, torch.ones_like(selected_l1))
+            selected_l2 = torch.where(present, selected_l2, torch.full_like(selected_l2, 2))
+            legal_l1 = torch.arange(self.num_cut_layers - 1, device=encoded_states.device).unsqueeze(0) >= 1
+            l1_dist = Categorical(logits=self.l1_head(context).masked_fill(~legal_l1, -torch.inf))
             valid_l2 = torch.arange(self.num_cut_layers, device=encoded_states.device).unsqueeze(0) > selected_l1.unsqueeze(1)
             l2_dist = Categorical(logits=self.l2_head(context).masked_fill(~valid_l2, -torch.inf))
             split_log_probs[:, mig_id] = l1_dist.log_prob(selected_l1) + l2_dist.log_prob(selected_l2)
@@ -390,5 +398,181 @@ class ClusterSplitHead(nn.Module):
 
 
 AutoregressiveDecoder = CausalDeviceDecoder
+
+
+class RestrictedGrowthPartitionDecoder(nn.Module):
+    """Autoregressive set partition with canonical, contiguous cluster labels."""
+
+    def __init__(self, hidden_dim, num_migs, num_heads=4, num_layers=2, prior_scale=1.0):
+        super().__init__()
+        self.hidden_dim, self.num_migs = int(hidden_dim), int(num_migs)
+        self.prior_scale = float(prior_scale)
+        self.start_token = nn.Parameter(torch.zeros(hidden_dim))
+        self.cluster_embedding = nn.Embedding(num_migs, hidden_dim)
+        layer = nn.TransformerDecoderLayer(
+            hidden_dim, num_heads, hidden_dim * 4, batch_first=True,
+            activation="gelu", norm_first=True, dropout=0.0)
+        self.transformer = nn.TransformerDecoder(layer, num_layers=num_layers)
+        self.output_norm = nn.LayerNorm(hidden_dim)
+        self.residual_head = nn.Linear(hidden_dim, num_migs)
+        nn.init.zeros_(self.residual_head.weight)
+        nn.init.zeros_(self.residual_head.bias)
+
+    @staticmethod
+    def _mask(length, device):
+        return torch.triu(torch.ones(length, length, dtype=torch.bool, device=device), diagonal=1)
+
+    def _decode(self, ordered_states, clusters):
+        shifted = ordered_states.new_zeros(ordered_states.shape)
+        shifted[:, 0] = self.start_token
+        if ordered_states.shape[1] > 1:
+            shifted[:, 1:] = self.cluster_embedding(clusters[:, :-1])
+        target = ordered_states + shifted
+        return self.output_norm(self.transformer(
+            target, ordered_states, tgt_mask=self._mask(target.shape[1], target.device)))
+
+    def _distribution(self, feature, prefix, index, available_migs, workload_costs=None):
+        batch = feature.shape[0]
+        valid = torch.zeros((batch, self.num_migs), dtype=torch.bool, device=feature.device)
+        prior = feature.new_full((batch, self.num_migs), -torch.inf)
+        for row in range(batch):
+            if index == 0:
+                valid[row, 0] = True
+                prior[row, 0] = 0.0
+                continue
+            used = int(prefix[row, :index].max().item()) + 1
+            upper = min(used + 1, int(available_migs))
+            valid[row, :upper] = True
+            counts = torch.bincount(prefix[row, :index], minlength=self.num_migs).long()
+            projected = []
+            for candidate in range(upper):
+                next_counts = counts.clone()
+                next_counts[candidate] += 1
+                active_counts = next_counts[:max(used, candidate + 1)]
+                if workload_costs is None:
+                    projected.append(active_counts.float().max())
+                else:
+                    projected.append(workload_costs[row, active_counts].max())
+            costs = torch.stack(projected)
+            prior[row, :upper] = -self.prior_scale * (costs - costs.min()) / costs.std(unbiased=False).clamp_min(1.0)
+        logits = self.residual_head(feature) + prior
+        return Categorical(logits=logits.masked_fill(~valid, -torch.inf)), prior
+
+    def act(self, ordered_states, available_migs, deterministic=False, workload_costs=None):
+        batch, count, _ = ordered_states.shape
+        clusters = torch.zeros((batch, count), dtype=torch.long, device=ordered_states.device)
+        log_probs = ordered_states.new_zeros((batch, count))
+        entropies = ordered_states.new_zeros((batch, count))
+        priors = ordered_states.new_zeros((batch, count, self.num_migs))
+        for index in range(count):
+            decoded = self._decode(ordered_states, clusters)
+            distribution, prior = self._distribution(
+                decoded[:, index], clusters, index, available_migs, workload_costs)
+            choice = distribution.probs.argmax(-1) if deterministic else distribution.sample()
+            clusters[:, index] = choice
+            log_probs[:, index] = distribution.log_prob(choice)
+            entropies[:, index] = distribution.entropy()
+            priors[:, index] = torch.where(torch.isfinite(prior), prior, torch.zeros_like(prior))
+        return clusters, log_probs, entropies, priors
+
+    def evaluate_actions(self, ordered_states, clusters, available_migs, workload_costs=None):
+        decoded = self._decode(ordered_states, clusters)
+        log_probs, entropies, priors = [], [], []
+        for index in range(ordered_states.shape[1]):
+            distribution, prior = self._distribution(
+                decoded[:, index], clusters, index, available_migs, workload_costs)
+            choice = clusters[:, index]
+            if not torch.isfinite(distribution.log_prob(choice)).all():
+                raise ValueError("cluster sequence violates restricted-growth constraints")
+            log_probs.append(distribution.log_prob(choice))
+            entropies.append(distribution.entropy())
+            priors.append(torch.where(torch.isfinite(prior), prior, torch.zeros_like(prior)))
+        return torch.stack(log_probs, 1), torch.stack(entropies, 1), torch.stack(priors, 1)
+
+
+class PhysicsGuidedClusterSplitDecoder(nn.Module):
+    """Causal cluster-level split policy with fixed physical prior logits."""
+
+    def __init__(self, hidden_dim, num_migs, num_cut_layers, num_heads=4, num_layers=2):
+        super().__init__()
+        self.num_migs, self.num_cut_layers = int(num_migs), int(num_cut_layers)
+        pairs = [(l1, l2) for l1 in range(1, num_cut_layers - 1)
+                 for l2 in range(l1 + 1, num_cut_layers)]
+        self.register_buffer("split_pairs", torch.as_tensor(pairs, dtype=torch.long))
+        self.start_token = nn.Parameter(torch.zeros(hidden_dim))
+        self.split_embedding = nn.Embedding(len(pairs), hidden_dim)
+        self.member_embed = nn.Linear(1, hidden_dim)
+        layer = nn.TransformerEncoderLayer(
+            hidden_dim, num_heads, hidden_dim * 4, batch_first=True,
+            activation="gelu", norm_first=True, dropout=0.0)
+        self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.output_norm = nn.LayerNorm(hidden_dim)
+        self.residual_head = nn.Linear(hidden_dim, len(pairs))
+        nn.init.zeros_(self.residual_head.weight)
+        nn.init.zeros_(self.residual_head.bias)
+
+    @staticmethod
+    def _mask(length, device):
+        return torch.triu(torch.ones(length, length, dtype=torch.bool, device=device), diagonal=1)
+
+    def _contexts(self, encoded, clusters):
+        contexts, present = [], []
+        for cluster in range(self.num_migs):
+            members = clusters.eq(cluster)
+            count = members.sum(1)
+            safe = count.clamp_min(1).unsqueeze(-1)
+            pooled = (encoded * members.unsqueeze(-1)).sum(1) / safe
+            contexts.append(pooled + self.member_embed((count.float() / encoded.shape[1]).unsqueeze(-1)))
+            present.append(count > 0)
+        return torch.stack(contexts, 1), torch.stack(present, 1)
+
+    def _decode(self, contexts, split_ids):
+        shifted = contexts.new_zeros(contexts.shape)
+        shifted[:, 0] = self.start_token
+        if contexts.shape[1] > 1:
+            shifted[:, 1:] = self.split_embedding(split_ids[:, :-1])
+        return self.output_norm(self.transformer(contexts + shifted, mask=self._mask(contexts.shape[1], contexts.device)))
+
+    def act(self, encoded, clusters, prior_logits, deterministic=False):
+        contexts, present = self._contexts(encoded, clusters)
+        split_ids = torch.zeros((encoded.shape[0], self.num_migs), dtype=torch.long, device=encoded.device)
+        log_probs = encoded.new_zeros((encoded.shape[0], self.num_migs))
+        entropies = encoded.new_zeros((encoded.shape[0], self.num_migs))
+        for index in range(self.num_migs):
+            decoded = self._decode(contexts, split_ids)
+            distribution = Categorical(logits=self.residual_head(decoded[:, index]) + prior_logits[:, index])
+            choice = distribution.probs.argmax(-1) if deterministic else distribution.sample()
+            split_ids[:, index] = choice
+            log_probs[:, index] = torch.where(present[:, index], distribution.log_prob(choice), torch.zeros_like(choice, dtype=encoded.dtype))
+            entropies[:, index] = torch.where(present[:, index], distribution.entropy(), torch.zeros_like(distribution.entropy()))
+        selected = self.split_pairs[split_ids]
+        l1 = torch.ones_like(clusters)
+        l2 = torch.full_like(clusters, 2)
+        for cluster in range(self.num_migs):
+            l1 = torch.where(clusters.eq(cluster), selected[:, cluster, 0].unsqueeze(1), l1)
+            l2 = torch.where(clusters.eq(cluster), selected[:, cluster, 1].unsqueeze(1), l2)
+        return l1, l2, log_probs, entropies, present, split_ids
+
+    def evaluate_actions(self, encoded, clusters, prior_logits, l1, l2):
+        contexts, present = self._contexts(encoded, clusters)
+        split_ids = torch.zeros((encoded.shape[0], self.num_migs), dtype=torch.long, device=encoded.device)
+        for cluster in range(self.num_migs):
+            members = clusters.eq(cluster)
+            selected_l1 = torch.where(members, l1, torch.zeros_like(l1)).max(1).values
+            selected_l2 = torch.where(members, l2, torch.zeros_like(l2)).max(1).values
+            for row in range(encoded.shape[0]):
+                if not present[row, cluster]:
+                    continue
+                match = torch.nonzero(
+                    (self.split_pairs[:, 0] == selected_l1[row])
+                    & (self.split_pairs[:, 1] == selected_l2[row]), as_tuple=False)
+                if not len(match):
+                    raise ValueError("illegal or inconsistent cluster split pair")
+                split_ids[row, cluster] = match[0, 0]
+        decoded = self._decode(contexts, split_ids)
+        distributions = Categorical(logits=self.residual_head(decoded) + prior_logits)
+        log_probs = torch.where(present, distributions.log_prob(split_ids), torch.zeros_like(decoded[..., 0]))
+        entropies = torch.where(present, distributions.entropy(), torch.zeros_like(decoded[..., 0]))
+        return log_probs, entropies, present, split_ids
 
 

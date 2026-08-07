@@ -36,6 +36,10 @@ def build_scenario_a_trace(provider, seed, total_epochs):
             station_id=station_id,
             vehicle_id_offset=(station_id - 1) * 10,
             seed=seed + station_id,
+            # Scenario A uses measured accelerator wall-clock for compute delay.
+            # Keep the legacy state column as a constant schema placeholder rather
+            # than inventing unobserved heterogeneous client capacities.
+            compute_profile="uniform",
         )
         for station_id in (1, 2, 3)
     }

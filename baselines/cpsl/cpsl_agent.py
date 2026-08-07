@@ -16,7 +16,7 @@ class CPSLAgent(BaseAgent):
     """
 
     DEFAULT_PAYLOAD_BYTES = np.asarray(
-        [49152.0, 1048576.0, 1048576.0, 524288.0, 262144.0, 131072.0], dtype=np.float64)
+        [12288.0, 262144.0, 262144.0, 131072.0, 65536.0, 32768.0, 2048.0], dtype=np.float64)
 
     def __init__(self, fixed_clusters=2, fixed_l1=3, fixed_l2=4, cluster_capacity=5,
                  subchannels=100, gibbs_iterations=40, gibbs_temperature=0.05,
@@ -24,12 +24,12 @@ class CPSLAgent(BaseAgent):
         super().__init__(agent_name="PaperAdapted-CPSL")
         if fixed_clusters < 1 or cluster_capacity < 1 or subchannels < 1:
             raise ValueError("cluster and subchannel counts must be positive")
-        if not 0 <= fixed_l1 < fixed_l2:
-            raise ValueError("fixed split pair must satisfy 0 <= l1 < l2")
+        if not 1 <= fixed_l1 < fixed_l2:
+            raise ValueError("fixed split pair must keep Part A non-empty")
         payloads = self.DEFAULT_PAYLOAD_BYTES if payload_bytes_by_l1 is None else payload_bytes_by_l1
         payloads = np.asarray(payloads, dtype=np.float64)
-        if fixed_l1 >= len(payloads) or not np.isfinite(payloads).all() or (payloads < 0).any():
-            raise ValueError("payload profile does not cover fixed_l1")
+        if fixed_l2 >= len(payloads) or not np.isfinite(payloads).all() or (payloads < 0).any():
+            raise ValueError("payload profile does not cover the fixed split pair")
         self.fixed_clusters = int(fixed_clusters)
         self.fixed_l1 = int(fixed_l1)
         self.fixed_l2 = int(fixed_l2)
@@ -46,10 +46,16 @@ class CPSLAgent(BaseAgent):
         return np.log2(1.0 + 10.0 * np.maximum(np.asarray(channel_gain, dtype=np.float64), 0.0))
 
     def _objective(self, state, bandwidth_hz, clusters, allocation):
-        payload_bits = 8.0 * self.payload_bytes_by_l1[self.fixed_l1]
+        # Section 3.1.1: both UL and DL carry v(l1)+v(l2).
+        payload_bits = 8.0 * (
+            self.payload_bytes_by_l1[self.fixed_l1]
+            + self.payload_bytes_by_l1[self.fixed_l2])
         rate_unit = max(float(bandwidth_hz), 1e-9) / self.subchannels
         efficiency = np.maximum(self._spectral_efficiency(state[:, 0]), 1e-9)
-        tx = payload_bits / np.maximum(allocation * rate_unit * efficiency, 1e-12)
+        uplink = payload_bits / np.maximum(allocation * rate_unit * efficiency, 1e-12)
+        downlink = payload_bits / np.maximum(
+            (float(self.subchannels) / len(state)) * rate_unit * efficiency, 1e-12)
+        tx = uplink + downlink
         compute = (self.fixed_l1 + 1.0) * 1e-3 / np.maximum(state[:, 1], 1e-6)
         return max(float(np.max(tx[clusters == group] + compute[clusters == group]))
                    for group in np.unique(clusters))
@@ -88,8 +94,10 @@ class CPSLAgent(BaseAgent):
             raise ValueError("CPSL SAA needs matching historical states and bandwidths")
         scores = {}
         original = self.fixed_l1
-        for l1 in range(len(self.payload_bytes_by_l1)):
+        # l1=0 uploads raw inputs and is not a valid split-learning action.
+        for l1 in range(1, len(self.payload_bytes_by_l1) - 1):
             self.fixed_l1 = l1
+            self.fixed_l2 = l1 + 1
             samples = []
             for state, bandwidth in zip(states, bandwidths):
                 clusters = self._initial_clusters(state, min(self.fixed_clusters, len(state)))

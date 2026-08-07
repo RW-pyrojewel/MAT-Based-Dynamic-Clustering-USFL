@@ -72,7 +72,7 @@ def _baseline_context(agent, provider, client_ids, model):
 
 
 def _act(agent, state, available_migs, edge_state, deterministic, client_ids=None,
-         baseline_context=None):
+         baseline_context=None, num_cut_layers=7):
     if isinstance(agent, MATAgent):
         action, policy_info = agent.act(
             state,
@@ -87,8 +87,10 @@ def _act(agent, state, available_migs, edge_state, deterministic, client_ids=Non
             **(baseline_context or {}))
     if (action["cluster"] < 0).any() or (action["cluster"] >= available_migs).any():
         raise ValueError("agent produced a cluster outside the available MIG range")
-    if not np.all(action["l1"] < action["l2"]):
-        raise ValueError("agent produced an invalid USFL split pair")
+    l1 = np.asarray(action["l1"], dtype=np.int64)
+    l2 = np.asarray(action["l2"], dtype=np.int64)
+    if not np.all((1 <= l1) & (l1 < l2) & (l2 <= int(num_cut_layers) - 1)):
+        raise ValueError("agent produced a split that leaves Part A or Part C empty")
     if action["bw"].sum() > 1.0 + 1e-6:
         raise ValueError("agent exceeded the global bandwidth budget")
     return action, policy_info
@@ -161,11 +163,56 @@ def _compress_feature_tensor(tensor, ratio):
     return tensor * mask, int(mask.sum().item())
 
 
+def _copy_sgd_momentum(source_optimizer, source_model, target_optimizer, target_model):
+    """Copy momentum by parameter order between identical model replicas."""
+    for source, target in zip(source_model.parameters(), target_model.parameters()):
+        momentum = source_optimizer.state.get(source, {}).get("momentum_buffer")
+        if momentum is not None:
+            target_optimizer.state[target]["momentum_buffer"] = momentum.detach().clone()
+
+
+def _restore_weighted_sgd_momentum(optimizer, model, weighted_momenta):
+    optimizer.state.clear()
+    for parameter, momentum in zip(model.parameters(), weighted_momenta):
+        if momentum is not None:
+            optimizer.state[parameter]["momentum_buffer"] = momentum.to(
+                device=parameter.device, dtype=parameter.dtype)
+
+
+def _accumulate_sgd_momentum(accumulator, optimizer, model, weight):
+    for index, parameter in enumerate(model.parameters()):
+        momentum = optimizer.state.get(parameter, {}).get("momentum_buffer")
+        if momentum is not None:
+            contribution = momentum.detach().float() * float(weight)
+            accumulator[index] = contribution if accumulator[index] is None else accumulator[index] + contribution
+
+
+def _communication_payloads(activation_l1_bytes, activation_l2_bytes):
+    """Build the four symmetric USFL boundary payloads from Section 3.1.1."""
+    l1 = np.asarray(activation_l1_bytes, dtype=np.float64)
+    l2 = np.asarray(activation_l2_bytes, dtype=np.float64)
+    if l1.shape != l2.shape or not np.isfinite(l1).all() or not np.isfinite(l2).all():
+        raise ValueError("boundary payload vectors must be matching and finite")
+    if (l1 < 0.0).any() or (l2 < 0.0).any():
+        raise ValueError("boundary payloads must be non-negative")
+    symmetric = l1 + l2
+    return {
+        "smashed_sizes": l1,
+        "activation_l1_bytes": l1,
+        "activation_l2_bytes": l2,
+        "gradient_l2_bytes": l2.copy(),
+        "gradient_l1_bytes": l1.copy(),
+        "uplink_payload_bytes": symmetric,
+        "downlink_payload_bytes": symmetric.copy(),
+    }
+
+
 def _run_usfl_round(model, optimizer, provider, iterators, client_ids, action, device, local_steps):
     """Execute actual U-shaped split training for several local mini-batches."""
     model.train()
     cluster_compute_delays = {}
-    smashed_sizes = np.zeros(len(client_ids), dtype=np.float64)
+    activation_l1_bytes = np.zeros(len(client_ids), dtype=np.float64)
+    activation_l2_bytes = np.zeros(len(client_ids), dtype=np.float64)
     total_loss = 0.0
     total_correct = 0
     total_examples = 0
@@ -213,10 +260,15 @@ def _run_usfl_round(model, optimizer, provider, iterators, client_ids, action, d
                 part, nonzero = _compress_feature_tensor(
                     smashed_batch[offset:offset + size], compression[local_index])
                 compressed_parts.append(part)
-                retained.append(nonzero / size * smashed_batch.element_size())
+                retained.append(nonzero * smashed_batch.element_size())
                 offset += size
             smashed_batch = torch.cat(compressed_parts, dim=0)
             advanced_batch = model.forward_partB(smashed_batch, l1, l2)
+            offset = 0
+            for local_index, size in zip(members, part_sizes):
+                activation_l2_bytes[local_index] += (
+                    advanced_batch[offset:offset + size].numel() * advanced_batch.element_size())
+                offset += size
             logits = model.forward_partC(advanced_batch, l2)
             loss = functional.cross_entropy(logits, target_batch)
             (loss * float(aggregation[members].sum())).backward()
@@ -228,11 +280,11 @@ def _run_usfl_round(model, optimizer, provider, iterators, client_ids, action, d
             total_correct += int((logits.detach().argmax(dim=1) == target_batch).sum())
             total_examples += len(target_batch)
             for local_index, retained_bytes in zip(members, retained):
-                smashed_sizes[local_index] += retained_bytes
+                activation_l1_bytes[local_index] += retained_bytes
         optimizer.step()
 
     return {
-        "smashed_sizes": smashed_sizes,
+        **_communication_payloads(activation_l1_bytes, activation_l2_bytes),
         "cluster_compute_delays": cluster_compute_delays,
         "train_loss": total_loss / max(total_examples, 1),
         "train_accuracy": total_correct / max(total_examples, 1),
@@ -241,24 +293,30 @@ def _run_usfl_round(model, optimizer, provider, iterators, client_ids, action, d
 
 def _run_clustersfl_round(model, optimizer, provider, iterators, client_ids, action, device,
                           local_steps, learning_rate):
-    """Train independent ClusterSFL models and aggregate the complete cluster models."""
+    """Fixed-budget ClusterSFL training with sample-aligned aggregation."""
     base_state = copy.deepcopy(model.state_dict())
     volumes = _client_data_volumes(provider, client_ids)
     aggregate = {key: torch.zeros_like(value, dtype=torch.float32) if torch.is_floating_point(value)
                  else value.clone() for key, value in base_state.items()}
-    smashed_sizes = np.zeros(len(client_ids), dtype=np.float64)
+    activation_l1_bytes = np.zeros(len(client_ids), dtype=np.float64)
+    activation_l2_bytes = np.zeros(len(client_ids), dtype=np.float64)
     cluster_compute = {}
     total_loss = total_correct = total_examples = 0
+    weighted_momenta = [None] * len(list(model.parameters()))
+    cluster_count = len(np.unique(action["cluster"]))
     for cluster in np.unique(action["cluster"]):
         members = np.flatnonzero(action["cluster"] == cluster)
-        cluster_weight = float(np.asarray(action["aggregation_weight"])[members].sum())
-        frequency = min(local_steps, int(action["local_update_frequency"][int(cluster)]))
+        # Every active client consumes the same batch size and local_steps, so its
+        # actual sample contribution—not its full dataset size—sets the weight.
+        cluster_weight = float(len(members) / len(client_ids))
+        frequency = int(local_steps)
         cluster_model = copy.deepcopy(model)
         cluster_model.load_state_dict(base_state)
         cluster_model.train()
         cluster_optimizer = torch.optim.SGD(
             cluster_model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=5e-4)
-        started = time.perf_counter()
+        _copy_sgd_momentum(optimizer, model, cluster_optimizer, cluster_model)
+        cluster_elapsed = 0.0
         for _ in range(frequency):
             cluster_optimizer.zero_grad(set_to_none=True)
             batches = [_next_batch(provider, iterators, int(client_ids[index]),
@@ -266,6 +324,9 @@ def _run_clustersfl_round(model, optimizer, provider, iterators, client_ids, act
             images = torch.cat([batch[0].to(device) for batch in batches], dim=0)
             targets = torch.cat([batch[1].to(device) for batch in batches], dim=0)
             sizes = [len(batch[1]) for batch in batches]
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            compute_started = time.perf_counter()
             l1, l2 = int(action["l1"][members[0]]), int(action["l2"][members[0]])
             smashed = cluster_model.forward_partA(images, l1)
             parts, offset = [], 0
@@ -273,34 +334,47 @@ def _run_clustersfl_round(model, optimizer, provider, iterators, client_ids, act
                 part, retained = _compress_feature_tensor(
                     smashed[offset:offset + size], action["feature_compression"][index])
                 parts.append(part)
-                smashed_sizes[index] += retained / size * smashed.element_size()
+                activation_l1_bytes[index] += retained * smashed.element_size()
                 offset += size
             smashed = torch.cat(parts, dim=0)
-            logits = cluster_model.forward_partC(cluster_model.forward_partB(smashed, l1, l2), l2)
+            advanced = cluster_model.forward_partB(smashed, l1, l2)
+            offset = 0
+            for index, size in zip(members, sizes):
+                activation_l2_bytes[index] += (
+                    advanced[offset:offset + size].numel() * advanced.element_size())
+                offset += size
+            logits = cluster_model.forward_partC(advanced, l2)
             loss = functional.cross_entropy(logits, targets)
             loss.backward()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            cluster_elapsed += time.perf_counter() - compute_started
             cluster_optimizer.step()
             total_loss += float(loss.detach()) * len(targets)
             total_correct += int((logits.detach().argmax(dim=1) == targets).sum())
             total_examples += len(targets)
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
-        cluster_compute[int(cluster)] = time.perf_counter() - started
+        cluster_compute[int(cluster)] = cluster_elapsed
         state = cluster_model.state_dict()
         for key, value in aggregate.items():
             if torch.is_floating_point(base_state[key]):
                 value.add_(state[key].detach().float(), alpha=cluster_weight)
+        _accumulate_sgd_momentum(
+            weighted_momenta, cluster_optimizer, cluster_model, cluster_weight)
         del cluster_model, cluster_optimizer
     for key, value in aggregate.items():
         aggregate[key] = (value.to(dtype=base_state[key].dtype)
                           if torch.is_floating_point(base_state[key]) else base_state[key])
     model.load_state_dict(aggregate)
-    optimizer.state.clear()
+    _restore_weighted_sgd_momentum(optimizer, model, weighted_momenta)
     return {
-        "smashed_sizes": smashed_sizes,
+        **_communication_payloads(activation_l1_bytes, activation_l2_bytes),
         "cluster_compute_delays": cluster_compute,
         "train_loss": total_loss / max(total_examples, 1),
         "train_accuracy": total_correct / max(total_examples, 1),
+        "optimizer_steps": int(local_steps * cluster_count),
+        "client_local_steps": int(local_steps),
+        "paper_frequency_mean": float(np.mean(list(action["local_update_frequency"].values()))),
+        "cloud_aggregation_mass": float(total_examples),
     }
 
 
@@ -328,12 +402,15 @@ def _run_pcsfl_round(model, optimizer, provider, iterators, client_ids, action, 
     cluster_weights /= max(cluster_weights.sum(), 1e-12)
     aggregate = {key: torch.zeros_like(value, dtype=torch.float32) if torch.is_floating_point(value)
                  else value.clone() for key, value in base_state.items()}
-    smashed_sizes = np.zeros(len(client_ids), dtype=np.float64)
+    activation_l1_bytes = np.zeros(len(client_ids), dtype=np.float64)
+    activation_l2_bytes = np.zeros(len(client_ids), dtype=np.float64)
     client_compute = np.zeros(len(client_ids), dtype=np.float64)
     cluster_compute = {}
     total_loss = total_correct = total_examples = 0
     wasserstein = []
     client_embeddings = np.zeros((len(client_ids), 8), dtype=np.float32)
+    weighted_momenta = [None] * len(list(model.parameters()))
+    execution_group_count = 0
 
     for cluster_weight, cluster in zip(cluster_weights, cluster_ids):
         cluster_model = copy.deepcopy(model)
@@ -341,32 +418,56 @@ def _run_pcsfl_round(model, optimizer, provider, iterators, client_ids, action, 
         cluster_model.train()
         cluster_optimizer = torch.optim.SGD(
             cluster_model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=5e-4)
+        _copy_sgd_momentum(optimizer, model, cluster_optimizer, cluster_model)
         members = np.flatnonzero(action["cluster"] == cluster)
         cut_layers = np.unique(np.concatenate([action["l1"][members], action["l2"][members]]))
         base_sample = torch.sort(_parameter_sample(model, layer_indices=cut_layers))[0]
         member_weights = volumes[members] / max(volumes[members].sum(), 1e-12)
-        started = time.perf_counter()
+        cluster_elapsed = 0.0
         for _ in range(local_steps):
             cluster_optimizer.zero_grad(set_to_none=True)
-            for member_weight, index in zip(member_weights, members):
-                images, targets = _next_batch(
+            split_groups = {}
+            for index in members:
+                pair = (int(action["l1"][index]), int(action["l2"][index]))
+                split_groups.setdefault(pair, []).append(int(index))
+            for (l1, l2), group_indices in split_groups.items():
+                batches = [_next_batch(
                     provider, iterators, int(client_ids[index]), batch_size=iterators["batch_size"])
-                images, targets = images.to(device), targets.to(device)
-                client_started = time.perf_counter()
-                l1, l2 = int(action["l1"][index]), int(action["l2"][index])
+                    for index in group_indices]
+                images = torch.cat([batch[0].to(device) for batch in batches], dim=0)
+                targets = torch.cat([batch[1].to(device) for batch in batches], dim=0)
+                sizes = [len(batch[1]) for batch in batches]
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                group_started = time.perf_counter()
                 smashed = cluster_model.forward_partA(images, l1)
-                logits = cluster_model.forward_partC(cluster_model.forward_partB(smashed, l1, l2), l2)
-                loss = functional.cross_entropy(logits, targets)
-                (loss * float(member_weight)).backward()
-                client_compute[index] += time.perf_counter() - client_started
-                smashed_sizes[index] += smashed.numel() / len(targets) * smashed.element_size()
-                total_loss += float(loss.detach()) * len(targets)
-                total_correct += int((logits.detach().argmax(dim=1) == targets).sum())
-                total_examples += len(targets)
+                advanced = cluster_model.forward_partB(smashed, l1, l2)
+                logits = cluster_model.forward_partC(advanced, l2)
+                per_example = functional.cross_entropy(logits, targets, reduction="none")
+                offset = 0
+                weighted_loss = per_example.new_zeros(())
+                for index, size in zip(group_indices, sizes):
+                    member_position = int(np.flatnonzero(members == index)[0])
+                    weighted_loss = weighted_loss + per_example[offset:offset + size].mean() * float(
+                        member_weights[member_position])
+                    activation_l1_bytes[index] += (
+                        smashed[offset:offset + size].numel() * smashed.element_size())
+                    activation_l2_bytes[index] += (
+                        advanced[offset:offset + size].numel() * advanced.element_size())
+                    total_loss += float(per_example[offset:offset + size].detach().sum())
+                    total_correct += int((logits[offset:offset + size].detach().argmax(dim=1)
+                                          == targets[offset:offset + size]).sum())
+                    total_examples += size
+                    offset += size
+                weighted_loss.backward()
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                group_elapsed = time.perf_counter() - group_started
+                client_compute[group_indices] += group_elapsed
+                cluster_elapsed += group_elapsed
+                execution_group_count += 1
             cluster_optimizer.step()
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
-        cluster_compute[int(cluster)] = time.perf_counter() - started
+        cluster_compute[int(cluster)] = cluster_elapsed
         current_state = cluster_model.state_dict()
         for key, value in aggregate.items():
             if torch.is_floating_point(base_state[key]):
@@ -377,6 +478,8 @@ def _run_pcsfl_round(model, optimizer, provider, iterators, client_ids, action, 
         wasserstein.append(float(torch.mean(torch.abs(base_sample[:size] - current_sample[:size])).cpu()))
         embedding = _model_pca_embedding(cluster_model, dimensions=8)
         client_embeddings[members] = embedding
+        _accumulate_sgd_momentum(
+            weighted_momenta, cluster_optimizer, cluster_model, float(cluster_weight))
         del cluster_model, cluster_optimizer
 
     for key, value in aggregate.items():
@@ -385,15 +488,19 @@ def _run_pcsfl_round(model, optimizer, provider, iterators, client_ids, action, 
         else:
             aggregate[key] = value.to(dtype=base_state[key].dtype)
     model.load_state_dict(aggregate)
-    optimizer.state.clear()
+    _restore_weighted_sgd_momentum(optimizer, model, weighted_momenta)
     return {
-        "smashed_sizes": smashed_sizes,
+        **_communication_payloads(activation_l1_bytes, activation_l2_bytes),
         "cluster_compute_delays": cluster_compute,
         "client_compute_delays": client_compute,
         "train_loss": total_loss / max(total_examples, 1),
         "train_accuracy": total_correct / max(total_examples, 1),
         "pcsfl_clustering_factor": float(np.mean(wasserstein)) if wasserstein else 0.0,
         "pcsfl_client_model_embeddings": client_embeddings,
+        "pcsfl_execution_group_count": int(execution_group_count),
+        "optimizer_steps": int(local_steps * len(cluster_ids)),
+        "client_local_steps": int(local_steps),
+        "cloud_aggregation_mass": float(total_examples),
     }
 
 
@@ -432,6 +539,22 @@ def _fedavg(models, optimizers, weights=None):
     weights = np.asarray(weights, dtype=np.float64)
     weights /= max(weights.sum(), 1e-12)
     reference_state = copy.deepcopy(models[0].state_dict())
+    # Preserve SGD momentum across cloud aggregation. Resetting it every ten
+    # rounds silently changes the optimizer and especially harms compressed,
+    # non-IID baselines.
+    averaged_momenta = []
+    for parameter_index in range(len(list(models[0].parameters()))):
+        momenta = []
+        for model, optimizer in zip(models, optimizers):
+            parameter = list(model.parameters())[parameter_index]
+            momenta.append(optimizer.state.get(parameter, {}).get("momentum_buffer"))
+        if any(momentum is not None for momentum in momenta):
+            template = next(momentum for momentum in momenta if momentum is not None)
+            averaged_momenta.append(sum(
+                (momentum if momentum is not None else torch.zeros_like(template)).detach().float()
+                * float(weight) for momentum, weight in zip(momenta, weights)))
+        else:
+            averaged_momenta.append(None)
     for key, tensor in reference_state.items():
         values = [model.state_dict()[key] for model in models]
         if torch.is_floating_point(tensor):
@@ -442,7 +565,7 @@ def _fedavg(models, optimizers, weights=None):
             tensor.copy_(values[0])
     for model, optimizer in zip(models, optimizers):
         model.load_state_dict(reference_state)
-        optimizer.state.clear()
+        _restore_weighted_sgd_momentum(optimizer, model, averaged_momenta)
 
 
 def _flush_ppo(agent, buffer):
@@ -453,6 +576,7 @@ def _flush_ppo(agent, buffer):
         kwargs.pop("rewards"),
         kwargs.pop("next_states"),
         kwargs.pop("dones"),
+        one_step_advantage=(agent.policy_schema == "hierarchical_rgs_v4"),
         **kwargs,
     )
     buffer.clear()
@@ -460,12 +584,13 @@ def _flush_ppo(agent, buffer):
 
 
 def _build_agent(algorithm, state_dim, device, min_bandwidth_share, nominal_bandwidth_hz=100e6,
-                 seed=0):
+                 seed=0, batch_size=16, local_steps=4):
     algorithm = algorithm.lower()
     if algorithm == "mat":
         return "MAT-RL", MATAgent(
             state_dim=state_dim, hidden_dim=128, num_migs=7, num_cut_layers=7,
             min_bandwidth_share=min_bandwidth_share, nominal_bandwidth_hz=nominal_bandwidth_hz, device=device,
+            execution_batch_size=batch_size, execution_local_steps=local_steps,
         )
     if algorithm == "cpsl":
         return "PaperAdapted-CPSL", CPSLAgent(
@@ -541,8 +666,8 @@ def run_scenario_a(
 ):
     """Run one controller against a shared exogenous Scenario-A trace."""
     algorithm = algorithm.lower()
-    if mat_training_mode not in {"online", "collect"}:
-        raise ValueError("mat_training_mode must be online or collect")
+    if mat_training_mode not in {"online", "collect", "frozen"}:
+        raise ValueError("mat_training_mode must be online, collect or frozen")
     if mat_agent is not None and algorithm != "mat":
         raise ValueError("mat_agent can only be supplied for algorithm=mat")
     if not 1 <= total_epochs <= 150:
@@ -580,9 +705,14 @@ def run_scenario_a(
         algorithm_name, agent = _build_agent(
             algorithm, 2 + provider.num_classes, execution_device, min_bandwidth_share,
             nominal_bandwidth_hz=calculators[1].base_bandwidth, seed=seed,
+            batch_size=batch_size, local_steps=local_steps,
         )
     else:
         algorithm_name, agent = "MAT-RL", mat_agent
+        if isinstance(agent, MATAgent):
+            if (agent.execution_batch_size != batch_size
+                    or agent.execution_local_steps != local_steps):
+                raise ValueError("MAT execution payload profile must match batch_size/local_steps")
     cpsl_saa = None
     if isinstance(agent, CPSLAgent) and warmup_epochs > 0:
         historical_states, historical_bandwidths = [], []
@@ -602,9 +732,16 @@ def run_scenario_a(
     logger.set_metadata(
         scenario="A", algorithm=algorithm_name, dataset="CIFAR-100", num_stations=3, clients_per_station=10,
         total_epochs=total_epochs, batch_size=batch_size, local_steps=local_steps, warmup_epochs=warmup_epochs,
-        client_gradient_normalization=True, optimizer_momentum_reset_on_fedavg=True,
+        client_gradient_normalization=True, optimizer_momentum_reset_on_fedavg=False,
+        compute_state_semantics="constant schema placeholder; measured GPU wall-clock drives delay/reward",
+        compute_timing_semantics="synchronized accelerator wall-clock; controller time logged separately",
+        communication_model="research-plan-3.1.1 symmetric bidirectional USFL",
+        uplink_rate_model="beta_n * B_total * log2(1 + 10 * channel_gain_n)",
+        downlink_allocation="base-station equal share; independent of MAT uplink beta",
+        communication_payload_semantics="UL=v(l1)+grad(l2), DL=v(l2)+grad(l1); gradient/activation shapes symmetric",
+        communication_bytes_semantics="actual batched tensor bytes accumulated over local_steps",
         min_bandwidth_share=min_bandwidth_share,
-        baseline_fidelity_schema="paper-adapted-v2",
+        baseline_fidelity_schema="paper-adapted-v3-fixed-training-budget",
         baseline_external_budget="same Scenario-A clients/MIGs/bandwidth/data/rounds",
         baseline_cpsl_adaptation="global subchannel pool for concurrent Scenario-A MIGs",
         baseline_clustersfl_adaptation="top worker mapped to edge-cluster coordinator; fixed U-split",
@@ -615,11 +752,17 @@ def run_scenario_a(
             f"available_migs/7, bandwidth_hz/{calculators[1].base_bandwidth:g}"
         ),
         reward_delay_weight=reward_config.delay_weight,
+        reward_objective_mode=reward_config.objective_mode,
         reward_delay_reference_seconds=reward_config.delay_reference_seconds,
         reward_cluster_capacity_enabled=reward_config.cluster_size_limit is not None,
         fedavg_interval=fedavg_interval, seed=seed, device=str(execution_device), trace_id=trace.trace_id,
+        mat_policy_schema=getattr(agent, "policy_schema", None),
+        mat_policy_state_mode=getattr(agent, "policy_state_mode", None),
+        mat_temporal_credit=("one_step" if isinstance(agent, MATAgent)
+                             and agent.policy_schema == "hierarchical_rgs_v4" else "gae_or_not_applicable"),
     )
 
+    cumulative_global_delay_ms = 0.0
     for epoch in range(1, total_epochs + 1):
         is_warmup = epoch <= warmup_epochs
         observations = {}
@@ -637,7 +780,11 @@ def run_scenario_a(
                     episode_id, next_context=baseline_context)
 
         update_diagnostics = None
-        if algorithm == "mat" and mat_training_mode == "online" and len(buffer) >= ppo_update_interval:
+        # Do not consume a full batch immediately before the terminal actions.
+        # The three terminal transitions are then merged into the same-policy
+        # final batch instead of causing a numerically poor three-sample update.
+        if (algorithm == "mat" and mat_training_mode == "online"
+                and len(buffer) >= ppo_update_interval and epoch < total_epochs):
             update_started = time.perf_counter()
             update_diagnostics = _flush_ppo(agent, buffer)
             update_diagnostics["ppo_update_elapsed_seconds"] = time.perf_counter() - update_started
@@ -658,28 +805,39 @@ def run_scenario_a(
                     client_ids, action, execution_device, local_steps, learning_rate)
                 agent.update_client_embeddings(
                     client_ids, training["pcsfl_client_model_embeddings"])
+                # PCSFL's paper hierarchy aggregates cluster models by the
+                # participating clients' data volumes.
                 station_cloud_weights[station_id] = float(baseline_context["data_volumes"].sum())
             elif isinstance(agent, ClusterSFLAgent):
                 training = _run_clustersfl_round(
                     models[station_id], optimizers[station_id], provider, iterators[station_id],
                     client_ids, action, execution_device, local_steps, learning_rate)
-                station_cloud_weights[station_id] = float(action["cloud_aggregation_mass"])
+                station_cloud_weights[station_id] = float(training["cloud_aggregation_mass"])
             else:
                 training = _run_usfl_round(
                     models[station_id], optimizers[station_id], provider, iterators[station_id],
                     client_ids, action, execution_device, local_steps)
             allocator_diagnostics = None
+            downlink_rates = calculators[station_id].base_station_downlink_rates(
+                state[:, 0], bandwidth_hz=bandwidth)
+            downlink_delays = (
+                training["downlink_payload_bytes"] * 8.0 / downlink_rates)
             if algorithm == "mat" and agent.bandwidth_policy == "hybrid_water_filling":
                 allocation, allocator_diagnostics = agent.allocate_bandwidth(
-                    action, state, training["smashed_sizes"], training["cluster_compute_delays"], bandwidth)
+                    action, state, training["uplink_payload_bytes"],
+                    training["cluster_compute_delays"], bandwidth,
+                    downlink_delays=downlink_delays)
                 action["bw"] = allocation
-            tx_delays = calculators[station_id].calc_wireless_transmission_delay(
-                action["cluster"], action["bw"], training["smashed_sizes"], state[:, 0],
+            communication = calculators[station_id].calc_bidirectional_transmission_delay(
+                action["cluster"], action["bw"], training["activation_l1_bytes"],
+                training["activation_l2_bytes"], state[:, 0],
                 available_migs=available_migs, bandwidth_hz=bandwidth,
+                downlink_rates_bps=downlink_rates,
             )
+            tx_delays = communication["cluster_delays"]
             physical_metrics, physical_clients = _physical_channel_diagnostics(
                 agent, state, edge_state, action, policy_info, available_migs,
-                training["smashed_sizes"], bandwidth, min_bandwidth_share,
+                training["uplink_payload_bytes"], bandwidth, min_bandwidth_share,
             )
             if client_diagnostics_path is not None:
                 for client_index, (client, client_id) in enumerate(zip(physical_clients, client_ids)):
@@ -690,10 +848,23 @@ def run_scenario_a(
                             "allocator_equal_bandwidth": float(allocator_diagnostics["equal_bandwidth"][client_index]),
                             "allocator_hybrid_bandwidth": float(allocator_diagnostics["hybrid_bandwidth"][client_index]),
                             "allocator_compute_delay": float(allocator_diagnostics["client_compute_delays"][client_index]),
+                            "allocator_downlink_delay": float(
+                                allocator_diagnostics["client_downlink_delays"][client_index]),
                         }
                     client_diagnostics.append({
                         "seed": int(seed), "episode_id": int(episode_id), "epoch": int(epoch),
-                        "station_id": int(station_id), "client_id": int(client_id), **client, **allocator_client,
+                        "station_id": int(station_id), "client_id": int(client_id),
+                        "activation_l1_bytes": float(training["activation_l1_bytes"][client_index]),
+                        "activation_l2_bytes": float(training["activation_l2_bytes"][client_index]),
+                        "gradient_l2_bytes": float(training["gradient_l2_bytes"][client_index]),
+                        "gradient_l1_bytes": float(training["gradient_l1_bytes"][client_index]),
+                        "uplink_payload_bytes": float(training["uplink_payload_bytes"][client_index]),
+                        "downlink_payload_bytes": float(training["downlink_payload_bytes"][client_index]),
+                        "uplink_delay_ms": float(communication["uplink_delays"][client_index] * 1000.0),
+                        "downlink_delay_ms": float(communication["downlink_delays"][client_index] * 1000.0),
+                        "uplink_rate_bps": float(communication["uplink_rates_bps"][client_index]),
+                        "downlink_rate_bps": float(communication["downlink_rates_bps"][client_index]),
+                        **client, **allocator_client,
                     })
             total_delay = max(
                 tx_delays[mig_id] + training["cluster_compute_delays"].get(mig_id, 0.0)
@@ -702,10 +873,7 @@ def run_scenario_a(
             compute_delay = max(training["cluster_compute_delays"].values(), default=0.0)
             pcsfl_waiting_factor = None
             if isinstance(agent, PCSFLAgent):
-                efficiency = np.maximum(np.log2(1.0 + 10.0 * state[:, 0]), 1e-9)
-                client_tx = (8.0 * training["smashed_sizes"]
-                             / np.maximum(action["bw"] * bandwidth * efficiency, 1e-12))
-                client_times = training["client_compute_delays"] + client_tx
+                client_times = training["client_compute_delays"] + communication["client_delays"]
                 waiting = []
                 for cluster in np.unique(action["cluster"]):
                     members = np.flatnonzero(action["cluster"] == cluster)
@@ -715,11 +883,17 @@ def run_scenario_a(
             reward, reward_terms = compute_mat_reward(
                 total_delay, state[:, 2:], action["cluster"], action["bw"], reward_config
             )
+            runtime_diagnostics = {}
+            if isinstance(agent, MATAgent) and agent.policy_schema == "hierarchical_rgs_v4":
+                runtime_diagnostics = agent.observe_runtime(
+                    action, training["cluster_compute_delays"], epoch)
             pcsfl_learning_reward = None
             if isinstance(agent, PCSFLAgent):
                 pcsfl_learning_reward = agent.paper_reward(
                     training["pcsfl_clustering_factor"], pcsfl_waiting_factor)
-            updates_online = algorithm == "pcsfl" or (algorithm == "mat" and not is_warmup)
+            updates_online = (algorithm == "pcsfl" or (
+                algorithm == "mat" and mat_training_mode in {"online", "collect"}
+                and not is_warmup and not agent.physics_only))
             if updates_online:
                 pending[station_id] = {
                     "state": state, "edge_state": edge_state, "action": action, "reward": reward,
@@ -747,7 +921,17 @@ def run_scenario_a(
                 mean_l1=float(action["l1"].mean()), mean_l2=float(action["l2"].mean()),
                 smashed_data_bytes_total=float(training["smashed_sizes"].sum()),
                 smashed_data_bytes_per_client_mean=float(training["smashed_sizes"].mean()),
+                activation_l1_bytes_total=float(training["activation_l1_bytes"].sum()),
+                activation_l2_bytes_total=float(training["activation_l2_bytes"].sum()),
+                gradient_l2_bytes_total=float(training["gradient_l2_bytes"].sum()),
+                gradient_l1_bytes_total=float(training["gradient_l1_bytes"].sum()),
+                uplink_payload_bytes_total=float(training["uplink_payload_bytes"].sum()),
+                downlink_payload_bytes_total=float(training["downlink_payload_bytes"].sum()),
+                uplink_payload_bytes_per_client_mean=float(training["uplink_payload_bytes"].mean()),
+                downlink_payload_bytes_per_client_mean=float(training["downlink_payload_bytes"].mean()),
                 total_delay_ms=total_delay * 1000.0, tx_delay_ms=float(tx_delays.max()) * 1000.0,
+                uplink_delay_ms=float(communication["uplink_delays"].max()) * 1000.0,
+                downlink_delay_ms=float(communication["downlink_delays"].max()) * 1000.0,
                 compute_delay_ms=compute_delay * 1000.0, reward=reward, train_loss=training["train_loss"],
                 **allocator_scalars,
                 train_accuracy=training["train_accuracy"], test_accuracy=None, **reward_terms,
@@ -756,10 +940,29 @@ def run_scenario_a(
                 pcsfl_clustering_factor=training.get("pcsfl_clustering_factor"),
                 pcsfl_waiting_factor=pcsfl_waiting_factor,
                 pcsfl_learning_reward=pcsfl_learning_reward,
+                optimizer_steps=training.get("optimizer_steps", local_steps),
+                client_local_steps=training.get("client_local_steps", local_steps),
+                paper_local_frequency_mean=training.get("paper_frequency_mean"),
+                pcsfl_execution_group_count=training.get("pcsfl_execution_group_count"),
                 cpsl_proxy_delay=(policy_info or {}).get("cpsl_proxy_delay"),
                 baseline_exploration_epsilon=(policy_info or {}).get("epsilon"),
+                cluster_physics_prior_std=float(np.std((policy_info or {}).get(
+                    "cluster_prior_scores", 0.0))),
+                split_physics_prior_std=float(np.std((policy_info or {}).get(
+                    "split_prior_logits", 0.0))),
+                split_predicted_delay_min_seconds=float(np.min((policy_info or {}).get(
+                    "split_predicted_delays", [0.0]))),
                 **(agent.last_diagnostics if isinstance(agent, PCSFLAgent) else {}),
+                **runtime_diagnostics,
             )
+
+        epoch_rows = logger.records[algorithm_name][-3:]
+        global_round_delay_ms = max(float(row["total_delay_ms"]) for row in epoch_rows)
+        if epoch > warmup_epochs:
+            cumulative_global_delay_ms += global_round_delay_ms
+        for row in epoch_rows:
+            row["global_round_delay_ms"] = global_round_delay_ms
+            row["cumulative_global_delay_ms"] = cumulative_global_delay_ms
 
         if epoch % fedavg_interval == 0:
             cloud_weights = None

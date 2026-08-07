@@ -51,7 +51,9 @@ class PCSFLAgent(BaseAgent):
         self.state_dim = int(state_dim)
         self.max_clients = int(max_clients)
         self.max_migs = int(max_migs)
-        self.split_pairs = [(layer, layer + 1) for layer in range(int(num_cut_layers) - 1)]
+        if int(num_cut_layers) < 3:
+            raise ValueError("num_cut_layers must keep both client-side parts non-empty")
+        self.split_pairs = [(layer, layer + 1) for layer in range(1, int(num_cut_layers) - 1)]
         self.gamma = float(gamma)
         self.epsilon_start = float(epsilon_start)
         self.epsilon_end = float(epsilon_end)

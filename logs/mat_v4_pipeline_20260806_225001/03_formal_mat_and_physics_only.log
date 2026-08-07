@@ -1,0 +1,23 @@
+/home/lqs/.pyenv/versions/mat/lib/python3.14/site-packages/torch/nn/modules/transformer.py:392: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+[MAT-v4] seed=7
+[physics-only] seed=7
+[MAT-v4] seed=17
+[physics-only] seed=17
+[MAT-v4] seed=29
+[physics-only] seed=29
+/data/lqs/Project/MAT-Based-Dynamic-Clustering-USFL/Codes/logs/mat_v4_pipeline_20260806_225001/mat_physics_guided_v4_formal_20260806_234235
+{
+  "passed": false,
+  "gates": {
+    "numerically_stable": true,
+    "fixed_150_round_budget": true,
+    "single_step_credit": true,
+    "beats_baseline_by_10pct": false,
+    "beats_baseline_each_seed": false,
+    "baseline_bootstrap_lower_positive": false,
+    "beats_physics_only_by_3pct": false,
+    "beats_physics_only_two_seeds": false,
+    "accuracy_within_two_points": true
+  }
+}

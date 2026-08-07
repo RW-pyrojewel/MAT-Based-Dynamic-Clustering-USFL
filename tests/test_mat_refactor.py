@@ -132,6 +132,18 @@ class MATRefactorTests(unittest.TestCase):
         replay, _, _ = head.evaluate_actions(encoded, clusters, bandwidths, l1, l2)
         torch.testing.assert_close(replay[:, 0], original[:, 0])
         torch.testing.assert_close(changed[:, 0], original[:, 0])
+        self.assertTrue(torch.all(l1 >= 1))
+        self.assertTrue(torch.all(l2 <= 6))
+
+    def test_split_replay_rejects_empty_client_part(self):
+        head = ClusterSplitHead(hidden_dim=16, num_migs=2, num_cut_layers=7, num_heads=4)
+        encoded = torch.randn(1, 4, 16)
+        clusters = torch.tensor([[0, 0, 1, 1]])
+        bandwidths = torch.full((1, 4), 0.25)
+        illegal_l1 = torch.tensor([[0, 0, 1, 1]])
+        legal_l2 = torch.tensor([[2, 2, 2, 2]])
+        with self.assertRaises(ValueError):
+            head.evaluate_actions(encoded, clusters, bandwidths, illegal_l1, legal_l2)
 
     def test_edge_state_normalization_uses_physical_references(self):
         agent = MATAgent(state_dim=102, device="cpu", nominal_bandwidth_hz=100e6)
@@ -145,7 +157,11 @@ class MATRefactorTests(unittest.TestCase):
         reward, terms = compute_mat_reward(0.5, labels, clusters, bandwidths, MATRewardConfig())
         self.assertAlmostEqual(terms["delay_normalized"], 0.5)
         self.assertAlmostEqual(terms["kl_normalized"], 0.0)
-        self.assertAlmostEqual(reward, -0.25)
+        self.assertAlmostEqual(reward, -0.5)
+        legacy, _ = compute_mat_reward(
+            0.5, labels, clusters, bandwidths,
+            MATRewardConfig(objective_mode="legacy_delay_kl"))
+        self.assertAlmostEqual(legacy, -0.25)
         self.assertEqual(terms["cluster_size_violation"], 0.0)
 
     def test_gae_does_not_cross_station_boundaries(self):

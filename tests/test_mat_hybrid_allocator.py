@@ -75,7 +75,22 @@ class MATHybridAllocatorTests(unittest.TestCase):
         self.assertEqual(update["bandwidth_policy_grad_norm"], 0.0)
         self.assertEqual(update["bandwidth_head_grad_norm_pre"], 0.0)
 
-    def test_schema_v3_hybrid_round_trip(self):
+    def test_allocator_treats_downlink_as_client_offset(self):
+        agent = MATAgent(state_dim=6, hidden_dim=32, bandwidth_policy="hybrid_water_filling")
+        action, _ = agent.act(self.state, 3, self.edge, deterministic=True)
+        downlink = np.linspace(0.01, 0.1, len(self.payload))
+        allocation, diagnostics = agent.allocate_bandwidth(
+            action, self.state, self.payload, self.compute, self.edge[1],
+            downlink_delays=downlink)
+        costs = self.payload * 8.0 / np.log2(1.0 + 10.0 * self.state[:, 0])
+        offsets = np.asarray([self.compute[int(cluster)] for cluster in self.clusters]) + downlink
+        equal = np.full(len(self.payload), 0.1)
+        optimum = float(np.max(offsets + costs / (self.edge[1] * allocation)))
+        equal_value = float(np.max(offsets + costs / (self.edge[1] * equal)))
+        self.assertLessEqual(optimum, equal_value + 1e-9)
+        np.testing.assert_allclose(diagnostics["client_downlink_delays"], downlink)
+
+    def test_schema_v4_hybrid_round_trip(self):
         agent = MATAgent(state_dim=6, hidden_dim=32, bandwidth_policy="hybrid_water_filling")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hybrid.pt"
@@ -89,13 +104,20 @@ class MATHybridAllocatorTests(unittest.TestCase):
             np.testing.assert_allclose(actual[key], expected[key])
 
     def test_schema_v2_joint_and_schema_v1_legacy_load(self):
-        joint = MATAgent(state_dim=6, hidden_dim=32, bandwidth_policy="joint_dirichlet")
+        joint = MATAgent(
+            state_dim=6, hidden_dim=32, bandwidth_policy="joint_dirichlet",
+            policy_schema="legacy_v3", policy_state_mode="legacy_full")
         with tempfile.TemporaryDirectory() as directory:
             v3_path = Path(directory) / "joint_v3.pt"
             v2_path = Path(directory) / "joint_v2.pt"
             v1_path = Path(directory) / "legacy_v1.pt"
             joint.save_checkpoint(v3_path)
             payload = torch.load(v3_path, map_location="cpu", weights_only=False)
+            for key in (
+                "policy_schema", "policy_state_mode", "max_clients", "runtime_profile_alpha",
+                "physics_prior_scale", "execution_batch_size", "execution_local_steps", "physics_only"):
+                payload["config"].pop(key, None)
+            payload.pop("runtime_profile", None)
             payload["schema_version"] = 2
             torch.save(payload, v2_path)
             loaded_v2 = MATAgent.load_checkpoint(v2_path, load_optimizer=False)

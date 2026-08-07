@@ -11,7 +11,9 @@ from interfaces.base_agent import BaseAgent
 from utils.channel_diagnostics import offset_aware_oracle_bandwidth, required_airtime
 from models.mat_components import (
     CausalDeviceDecoder, ClusterSplitHead, HeterogeneousEncoder, JointDirichletBandwidthHead,
+    PhysicsGuidedClusterSplitDecoder, RestrictedGrowthPartitionDecoder,
 )
+from utils.runtime_profile import CausalRuntimeProfile
 
 
 class MATAgent(BaseAgent):
@@ -23,7 +25,11 @@ class MATAgent(BaseAgent):
                  compute_reference=2.5, snr_scale=10.0, bandwidth_policy="hybrid_water_filling",
                  dirichlet_alpha_floor=1.0, dirichlet_alpha_init=22.5,
                  bandwidth_physical_response_scale=10.0,
-                 bandwidth_context_channel_reference=1.0, device="cpu"):
+                 bandwidth_context_channel_reference=1.0, policy_schema=None,
+                 policy_state_mode=None, max_clients=10,
+                 runtime_profile_alpha=0.2, physics_prior_scale=1.0,
+                 execution_batch_size=16, execution_local_steps=4,
+                 physics_only=False, device="cpu"):
         super().__init__(agent_name="MAT-RL Agent (Proposed)")
         if num_cut_layers < 2 or nominal_bandwidth_hz <= 0:
             raise ValueError("invalid MAT dimensions")
@@ -45,7 +51,27 @@ class MATAgent(BaseAgent):
         self.max_grad_norm, self.huber_delta, self.target_kl = float(max_grad_norm), float(huber_delta), float(target_kl)
         self.channel_conditioning = channel_conditioning
         self.bandwidth_policy = bandwidth_policy
-        self.component_balanced_ppo = bool(component_balanced_ppo or bandwidth_policy == "joint_dirichlet")
+        self.policy_schema = ("hierarchical_rgs_v4" if bandwidth_policy == "hybrid_water_filling"
+                              else "legacy_v3") if policy_schema is None else str(policy_schema)
+        if self.policy_schema not in {"hierarchical_rgs_v4", "legacy_v3"}:
+            raise ValueError("policy_schema must be hierarchical_rgs_v4 or legacy_v3")
+        if self.policy_schema == "hierarchical_rgs_v4" and bandwidth_policy != "hybrid_water_filling":
+            raise ValueError("hierarchical_rgs_v4 requires hybrid_water_filling")
+        if policy_state_mode is None:
+            policy_state_mode = ("physical_runtime" if self.policy_schema == "hierarchical_rgs_v4"
+                                 else "legacy_full")
+        if policy_state_mode not in {"physical_runtime", "legacy_full"}:
+            raise ValueError("policy_state_mode must be physical_runtime or legacy_full")
+        self.policy_state_mode = policy_state_mode
+        self.physics_only = bool(physics_only)
+        self.max_clients = int(max_clients)
+        self.runtime_profile_alpha = float(runtime_profile_alpha)
+        self.physics_prior_scale = float(physics_prior_scale)
+        self.execution_batch_size = int(execution_batch_size)
+        self.execution_local_steps = int(execution_local_steps)
+        self.component_balanced_ppo = bool(
+            component_balanced_ppo or bandwidth_policy == "joint_dirichlet"
+            or self.policy_schema == "hierarchical_rgs_v4")
         self.dirichlet_alpha_floor = float(dirichlet_alpha_floor)
         self.dirichlet_alpha_init = float(dirichlet_alpha_init)
         self.bandwidth_physical_response_scale = float(bandwidth_physical_response_scale)
@@ -53,15 +79,25 @@ class MATAgent(BaseAgent):
         self.compute_reference, self.snr_scale = float(compute_reference), float(snr_scale)
         self.state_dim, self.hidden_dim, self.edge_state_dim = int(state_dim), int(hidden_dim), int(edge_state_dim)
         self.actor_learning_rate, self.critic_learning_rate = float(actor_learning_rate), float(critic_learning_rate)
-        self.encoder = HeterogeneousEncoder(state_dim, hidden_dim, edge_state_dim=edge_state_dim).to(self.device)
-        self.device_decoder = CausalDeviceDecoder(hidden_dim, num_migs, min_bandwidth_share=self.min_bandwidth_share).to(self.device)
+        encoder_state_dim = 1 if self.policy_state_mode == "physical_runtime" else state_dim
+        self.encoder = HeterogeneousEncoder(encoder_state_dim, hidden_dim, edge_state_dim=edge_state_dim).to(self.device)
+        self.runtime_profile = CausalRuntimeProfile(
+            self.max_clients, num_cut_layers, self.runtime_profile_alpha)
+        if self.policy_schema == "hierarchical_rgs_v4":
+            self.device_decoder = RestrictedGrowthPartitionDecoder(
+                hidden_dim, num_migs, prior_scale=self.physics_prior_scale).to(self.device)
+            self.split_head = PhysicsGuidedClusterSplitDecoder(
+                hidden_dim, num_migs, num_cut_layers).to(self.device)
+        else:
+            self.device_decoder = CausalDeviceDecoder(
+                hidden_dim, num_migs, min_bandwidth_share=self.min_bandwidth_share).to(self.device)
+            self.split_head = ClusterSplitHead(hidden_dim, num_migs, num_cut_layers).to(self.device)
         self.bandwidth_head = None
         if self.bandwidth_policy == "joint_dirichlet":
             self.bandwidth_head = JointDirichletBandwidthHead(
                 hidden_dim, num_migs, self.min_bandwidth_share, self.dirichlet_alpha_floor,
                 self.dirichlet_alpha_init, self.bandwidth_physical_response_scale
             ).to(self.device)
-        self.split_head = ClusterSplitHead(hidden_dim, num_migs, num_cut_layers).to(self.device)
         self.value_head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Linear(hidden_dim // 2, 1)).to(self.device)
         self.target_encoder = deepcopy(self.encoder).to(self.device)
         self.target_value_head = deepcopy(self.value_head).to(self.device)
@@ -92,6 +128,12 @@ class MATAgent(BaseAgent):
             "dirichlet_alpha_init": self.dirichlet_alpha_init,
             "bandwidth_physical_response_scale": self.bandwidth_physical_response_scale,
             "bandwidth_context_channel_reference": self.bandwidth_context_channel_reference,
+            "policy_schema": self.policy_schema, "policy_state_mode": self.policy_state_mode,
+            "max_clients": self.max_clients, "runtime_profile_alpha": self.runtime_profile_alpha,
+            "physics_prior_scale": self.physics_prior_scale,
+            "execution_batch_size": self.execution_batch_size,
+            "execution_local_steps": self.execution_local_steps,
+            "physics_only": self.physics_only,
         }
 
     def _parameters(self):
@@ -115,7 +157,7 @@ class MATAgent(BaseAgent):
 
     def save_checkpoint(self, path):
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "config": self._checkpoint_config,
             "encoder": self.encoder.state_dict(),
             "device_decoder": self.device_decoder.state_dict(),
@@ -127,6 +169,7 @@ class MATAgent(BaseAgent):
             "optimizer": self.optimizer.state_dict(),
             "policy_version": self.policy_version,
             "update_count": self.update_count,
+            "runtime_profile": self.runtime_profile.state_dict(),
         }
         torch.save(payload, path)
 
@@ -134,9 +177,12 @@ class MATAgent(BaseAgent):
     def load_checkpoint(cls, path, device="cpu", load_optimizer=True):
         payload = torch.load(path, map_location=device, weights_only=False)
         schema = int(payload.get("schema_version", 0))
-        if schema not in {1, 2, 3}:
+        if schema not in {1, 2, 3, 4}:
             raise ValueError("unsupported MAT checkpoint schema")
         config = dict(payload["config"])
+        if schema <= 3:
+            config["policy_schema"] = "legacy_v3"
+            config["policy_state_mode"] = "legacy_full"
         if schema == 1:
             config["bandwidth_policy"] = "sequential_gaussian"
         agent = cls(**config, device=device)
@@ -149,6 +195,8 @@ class MATAgent(BaseAgent):
             agent.optimizer.load_state_dict(payload["optimizer"])
         agent.policy_version = int(payload["policy_version"])
         agent.update_count = int(payload["update_count"])
+        if schema >= 4 and payload.get("runtime_profile") is not None:
+            agent.runtime_profile.load_state_dict(payload["runtime_profile"])
         agent._freeze_targets()
         return agent
 
@@ -161,7 +209,10 @@ class MATAgent(BaseAgent):
         prepared = tensor.clone()
         if self.channel_conditioning == "explicit":
             prepared[..., 0] = torch.log1p(self.snr_scale * prepared[..., 0].clamp_min(0.0)) / np.log1p(self.snr_scale)
-            prepared[..., 1] = prepared[..., 1] / self.compute_reference
+            if prepared.shape[-1] > 1:
+                prepared[..., 1] = prepared[..., 1] / self.compute_reference
+        if self.policy_state_mode == "physical_runtime":
+            prepared = prepared[..., :1]
         return prepared
 
     def _channel_features(self, prepared_state):
@@ -210,13 +261,81 @@ class MATAgent(BaseAgent):
         masked[..., 0] = self.bandwidth_context_channel_reference
         return self.encoder(masked, self._normalise_edge_state(edge_state))
 
+    def _split_prior_logits(self, raw_state, clusters, edge_state):
+        state = np.asarray(raw_state, dtype=np.float64)
+        clusters = np.asarray(clusters, dtype=np.int64)
+        bandwidth_hz = float(np.asarray(edge_state).reshape(-1)[1])
+        gains = np.maximum(state[:, 0], 0.0)
+        spectral = np.maximum(np.log2(1.0 + self.snr_scale * gains), 1e-9)
+        equal_share = 1.0 / len(clusters)
+        boundary = np.asarray([12288, 262144, 262144, 131072, 65536, 32768, 2048], dtype=np.float64)
+        priors = np.zeros((self.num_migs, len(self.runtime_profile.pairs)), dtype=np.float32)
+        predicted = np.zeros_like(priors)
+        multiplier = float(self.execution_batch_size * self.execution_local_steps)
+        for cluster in np.unique(clusters):
+            members = np.flatnonzero(clusters == cluster)
+            costs = []
+            for l1, l2 in self.runtime_profile.pairs:
+                payload = (boundary[l1] + boundary[l2]) * multiplier
+                # Equal provisional UL and BS-controlled equal DL use the same
+                # Shannon rate in the default Scenario-A scheduler.
+                communication = float(np.max(
+                    2.0 * payload * 8.0
+                    / np.maximum(equal_share * bandwidth_hz * spectral[members], 1e-9)))
+                costs.append(self.runtime_profile.predict(len(members), l1, l2) + communication)
+            costs = np.asarray(costs, dtype=np.float64)
+            predicted[int(cluster)] = costs
+            scale = max(float(costs.std()), 1e-6)
+            priors[int(cluster)] = (-self.physics_prior_scale * (costs - costs.min()) / scale).astype(np.float32)
+        return torch.as_tensor(priors, dtype=torch.float32, device=self.device).unsqueeze(0), predicted
+
+    def observe_runtime(self, action, cluster_compute_delays, epoch):
+        """Update the causal profile only after the current action has executed."""
+        self.runtime_profile.update(action, cluster_compute_delays, epoch)
+        return self.runtime_profile.diagnostics()
+
+    def _cluster_workload_costs(self, client_count):
+        """Snapshot causal size-dependent GPU workload for partition replay."""
+        client_count = int(client_count)
+        costs = np.arange(self.max_clients + 1, dtype=np.float64) / max(client_count, 1)
+        if self.runtime_profile.counts.any():
+            runtime = np.zeros(self.max_clients + 1, dtype=np.float64)
+            for size in range(1, self.max_clients + 1):
+                runtime[size] = min(
+                    self.runtime_profile.predict(size, l1, l2)
+                    for l1, l2 in self.runtime_profile.pairs)
+            scale = max(float(runtime[1:].max()), 1e-9)
+            costs += runtime / scale
+        return costs.astype(np.float32)
+
     @torch.no_grad()
     def act(self, active_clients_state, available_migs, edge_state, client_ids=None, deterministic=False):
         prepared_state, encoded = self._encode(active_clients_state, edge_state)
         client_count = encoded.shape[1]
         order = self._decision_order(client_count, client_ids, deterministic, self.device)
         ordered_encoded = encoded[:, order]
-        if self.bandwidth_policy == "joint_dirichlet":
+        cluster_prior_scores = encoded.new_zeros((1, client_count, self.num_migs))
+        split_prior_logits = encoded.new_zeros((1, self.num_migs, len(self.runtime_profile.pairs)))
+        split_predicted_delays = np.zeros((self.num_migs, len(self.runtime_profile.pairs)), dtype=np.float32)
+        split_action_ids = torch.zeros((1, self.num_migs), dtype=torch.long, device=self.device)
+        cluster_workload_costs = self._cluster_workload_costs(client_count)
+        if self.policy_schema == "hierarchical_rgs_v4":
+            ordered_clusters, cluster_lp, cluster_entropy, cluster_prior_scores = self.device_decoder.act(
+                ordered_encoded, available_migs, deterministic=deterministic,
+                workload_costs=torch.as_tensor(cluster_workload_costs, device=self.device).unsqueeze(0))
+            clusters = self._restore_original_order(ordered_clusters, order)
+            bandwidths = encoded.new_full((1, client_count), 1.0 / float(client_count))
+            bandwidth_lp = encoded.new_zeros((1, 1))
+            bandwidth_entropy = encoded.new_zeros((1, 1))
+            bandwidth_means = bandwidths
+            alpha = context_score = physical_score = physical_feature = encoded.new_zeros((1, client_count))
+            device_entropy = cluster_entropy
+            split_prior_logits, split_predicted_delays = self._split_prior_logits(
+                active_clients_state, clusters.squeeze(0).cpu().numpy(), edge_state)
+            l1, l2, split_lp, split_entropy, split_mask, split_action_ids = self.split_head.act(
+                encoded, clusters, split_prior_logits, deterministic=deterministic)
+            split_conditioning_bandwidth = bandwidths
+        elif self.bandwidth_policy == "joint_dirichlet":
             ordered_clusters, cluster_lp, cluster_entropy = self.device_decoder.act_clusters(
                 ordered_encoded, available_migs, deterministic=deterministic)
             clusters = self._restore_original_order(ordered_clusters, order)
@@ -248,12 +367,13 @@ class MATAgent(BaseAgent):
             clusters = self._restore_original_order(ordered_clusters, order)
             bandwidths = self._restore_original_order(ordered_bandwidths, order)
             alpha = context_score = physical_score = physical_feature = bandwidths.new_zeros(bandwidths.shape)
-        split_conditioning_bandwidth = (
-            encoded.new_full((1, client_count), 1.0 / float(client_count))
-            if self.bandwidth_policy == "hybrid_water_filling" else bandwidths
-        )
-        l1, l2, split_lp, split_entropy, split_mask = self.split_head.act(
-            encoded, clusters, split_conditioning_bandwidth, deterministic=deterministic)
+        if self.policy_schema != "hierarchical_rgs_v4":
+            split_conditioning_bandwidth = (
+                encoded.new_full((1, client_count), 1.0 / float(client_count))
+                if self.bandwidth_policy == "hybrid_water_filling" else bandwidths
+            )
+            l1, l2, split_lp, split_entropy, split_mask = self.split_head.act(
+                encoded, clusters, split_conditioning_bandwidth, deterministic=deterministic)
         value = self._aggregate_token_values(self.value_head, encoded)
         action = {"cluster": clusters.squeeze(0).cpu().numpy(), "l1": l1.squeeze(0).cpu().numpy(),
                   "l2": l2.squeeze(0).cpu().numpy(), "bw": bandwidths.squeeze(0).cpu().numpy()}
@@ -276,11 +396,17 @@ class MATAgent(BaseAgent):
             "bandwidth_physical_features": physical_feature.squeeze(0).cpu().numpy(),
             "split_conditioning_bandwidth": split_conditioning_bandwidth.squeeze(0).cpu().numpy(),
             "split_entropy": split_entropy.squeeze(0).cpu().numpy(),
+            "cluster_prior_scores": cluster_prior_scores.squeeze(0).cpu().numpy(),
+            "cluster_workload_costs": cluster_workload_costs,
+            "split_prior_logits": split_prior_logits.squeeze(0).cpu().numpy(),
+            "split_predicted_delays": np.asarray(split_predicted_delays, dtype=np.float32),
+            "split_action_ids": split_action_ids.squeeze(0).cpu().numpy(),
         }
         self.last_policy_info = policy_info
         return action, policy_info
 
-    def allocate_bandwidth(self, action, state, payload_bytes, cluster_compute_delays, bandwidth_hz):
+    def allocate_bandwidth(self, action, state, payload_bytes, cluster_compute_delays, bandwidth_hz,
+                           downlink_delays=None):
         if self.bandwidth_policy != "hybrid_water_filling":
             raise ValueError("allocate_bandwidth is only available for hybrid_water_filling")
         started = time.perf_counter()
@@ -290,9 +416,16 @@ class MATAgent(BaseAgent):
         if state.ndim != 2 or state.shape[0] != len(clusters) or payload.shape != clusters.shape:
             raise ValueError("state, cluster choices and payload must share the client dimension")
         airtimes = required_airtime(payload, state[:, 0])
+        downlink = (np.zeros(len(clusters), dtype=np.float64) if downlink_delays is None
+                    else np.asarray(downlink_delays, dtype=np.float64))
+        if downlink.shape != clusters.shape or not np.isfinite(downlink).all() or (downlink < 0.0).any():
+            raise ValueError("downlink_delays must be a matching finite non-negative vector")
         allocation = offset_aware_oracle_bandwidth(
-            airtimes, clusters, cluster_compute_delays, float(bandwidth_hz), self.min_bandwidth_share)
-        compute = np.asarray([float(cluster_compute_delays.get(int(cluster), 0.0)) for cluster in clusters])
+            airtimes, clusters, cluster_compute_delays, float(bandwidth_hz), self.min_bandwidth_share,
+            client_offsets=downlink)
+        cluster_compute = np.asarray([
+            float(cluster_compute_delays.get(int(cluster), 0.0)) for cluster in clusters])
+        compute = cluster_compute + downlink
         equal = np.full(len(clusters), 1.0 / len(clusters), dtype=np.float64)
         equal_client_delays = compute + airtimes / (float(bandwidth_hz) * equal)
         hybrid_client_delays = compute + airtimes / (float(bandwidth_hz) * allocation)
@@ -313,7 +446,8 @@ class MATAgent(BaseAgent):
             "required_airtimes": airtimes,
             "equal_bandwidth": equal,
             "hybrid_bandwidth": allocation,
-            "client_compute_delays": compute,
+            "client_compute_delays": cluster_compute,
+            "client_downlink_delays": downlink,
         }
         if hybrid_total > equal_total + 1e-9:
             raise FloatingPointError("hybrid water filling degraded the equal-bandwidth objective")
@@ -366,14 +500,33 @@ class MATAgent(BaseAgent):
         order = torch.as_tensor(decision_order, dtype=torch.long, device=self.device)
         return self._restore_original_order(means, order).squeeze(0).cpu().numpy()
 
-    def _evaluate_action(self, state, edge_state, action, available_migs, decision_order):
+    def _evaluate_action(self, state, edge_state, action, available_migs, decision_order, policy_info=None):
         prepared_state, encoded = self._encode(state, edge_state)
         order = torch.as_tensor(decision_order, dtype=torch.long, device=self.device)
         clusters = torch.as_tensor(action["cluster"], dtype=torch.long, device=self.device).reshape(1, -1)
         bandwidths = torch.as_tensor(action["bw"], dtype=torch.float32, device=self.device).reshape(1, -1)
         l1 = torch.as_tensor(action["l1"], dtype=torch.long, device=self.device).reshape(1, -1)
         l2 = torch.as_tensor(action["l2"], dtype=torch.long, device=self.device).reshape(1, -1)
-        if self.bandwidth_policy == "joint_dirichlet":
+        if self.policy_schema == "hierarchical_rgs_v4":
+            workload_costs = (self._cluster_workload_costs(encoded.shape[1]) if policy_info is None
+                              else policy_info["cluster_workload_costs"])
+            cluster_lp, cluster_entropy, cluster_prior = self.device_decoder.evaluate_actions(
+                encoded[:, order], clusters[:, order], available_migs,
+                workload_costs=torch.as_tensor(
+                    workload_costs, dtype=torch.float32, device=self.device).unsqueeze(0))
+            prior = (self._split_prior_logits(state, action["cluster"], edge_state)[0]
+                     if policy_info is None else torch.as_tensor(
+                         policy_info["split_prior_logits"], dtype=torch.float32,
+                         device=self.device).unsqueeze(0))
+            split_lp, split_entropy, split_mask, _ = self.split_head.evaluate_actions(
+                encoded, clusters, prior, l1, l2)
+            split_bandwidths = encoded.new_full(bandwidths.shape, 1.0 / float(bandwidths.shape[-1]))
+            bandwidth_lp = encoded.new_zeros((1, 1))
+            bandwidth_entropy = encoded.new_zeros((1, 1))
+            bandwidth_means = split_bandwidths
+            alpha = context_score = physical_score = physical_feature = encoded.new_zeros(bandwidths.shape)
+            device_entropy = cluster_entropy
+        elif self.bandwidth_policy == "joint_dirichlet":
             cluster_lp, cluster_entropy = self.device_decoder.evaluate_clusters(
                 encoded[:, order], clusters[:, order], available_migs)
             context = self._bandwidth_context(prepared_state, edge_state)
@@ -403,8 +556,9 @@ class MATAgent(BaseAgent):
                 channel_features=ordered_channels, return_diagnostics=True)
             alpha = context_score = physical_score = physical_feature = bandwidths.new_zeros(bandwidths.shape)
             split_bandwidths = bandwidths
-        split_lp, split_entropy, split_mask = self.split_head.evaluate_actions(
-            encoded, clusters, split_bandwidths, l1, l2)
+        if self.policy_schema != "hierarchical_rgs_v4":
+            split_lp, split_entropy, split_mask = self.split_head.evaluate_actions(
+                encoded, clusters, split_bandwidths, l1, l2)
         return {"cluster_log_probs": cluster_lp.squeeze(0), "bandwidth_log_probs": bandwidth_lp.squeeze(0),
                 "split_log_probs": split_lp.squeeze(0), "split_mask": split_mask.squeeze(0),
                 "device_entropy": device_entropy.squeeze(0), "cluster_entropy": cluster_entropy.squeeze(0),
@@ -479,7 +633,7 @@ class MATAgent(BaseAgent):
 
     def _sample_terms(self, index, states, actions, edge_states, available_migs, policy_infos, advantages, td_targets):
         evaluated = self._evaluate_action(states[index], edge_states[index], actions[index], available_migs[index],
-                                          policy_infos[index]["decision_order"])
+                                          policy_infos[index]["decision_order"], policy_infos[index])
         info = policy_infos[index]
         bandwidth_mask = torch.as_tensor(info["bandwidth_mask"], dtype=torch.bool, device=self.device)
         split_mask = torch.as_tensor(info["split_mask"], dtype=torch.bool, device=self.device)
@@ -562,7 +716,7 @@ class MATAgent(BaseAgent):
                         policy_infos, advantages, td_targets) for index in group]
                 evaluated.update(zip(group, terms))
             return [evaluated[index] for index in indices]
-        if len(indices) < 16:
+        if len(indices) < 16 and self.policy_schema != "hierarchical_rgs_v4":
             return [self._sample_terms(index, states, actions, edge_states, available_migs,
                                        policy_infos, advantages, td_targets) for index in indices]
         prepared = torch.cat([self._prepare_client_state(states[index]) for index in indices], dim=0)
@@ -575,7 +729,29 @@ class MATAgent(BaseAgent):
                                                  device=self.device) for index in indices])
         bandwidths = torch.stack([torch.as_tensor(actions[index]["bw"], dtype=torch.float32,
                                                    device=self.device) for index in indices])
-        if self.bandwidth_policy == "joint_dirichlet":
+        l1 = torch.stack([torch.as_tensor(actions[index]["l1"], dtype=torch.long,
+                                           device=self.device) for index in indices])
+        l2 = torch.stack([torch.as_tensor(actions[index]["l2"], dtype=torch.long,
+                                           device=self.device) for index in indices])
+        if self.policy_schema == "hierarchical_rgs_v4":
+            workload_costs = torch.stack([
+                torch.as_tensor(policy_infos[index]["cluster_workload_costs"],
+                                dtype=torch.float32, device=self.device)
+                for index in indices
+            ])
+            cluster_lp, cluster_entropy, _ = self.device_decoder.evaluate_actions(
+                ordered_encoded, torch.gather(clusters, 1, orders), next(iter(mig_counts)),
+                workload_costs=workload_costs)
+            prior_logits = torch.stack([
+                torch.as_tensor(policy_infos[index]["split_prior_logits"],
+                                dtype=torch.float32, device=self.device)
+                for index in indices
+            ])
+            split_lp, split_entropy, _, _ = self.split_head.evaluate_actions(
+                encoded, clusters, prior_logits, l1, l2)
+            bandwidth_lp = encoded.new_zeros((len(indices), 1))
+            bandwidth_entropy = encoded.new_zeros((len(indices), 1))
+        elif self.bandwidth_policy == "joint_dirichlet":
             cluster_lp, cluster_entropy = self.device_decoder.evaluate_clusters(
                 ordered_encoded, torch.gather(clusters, 1, orders), next(iter(mig_counts)))
             masked = prepared.clone()
@@ -602,11 +778,9 @@ class MATAgent(BaseAgent):
                     ordered_encoded, torch.gather(clusters, 1, orders), torch.gather(bandwidths, 1, orders),
                     next(iter(mig_counts)), channel_features=ordered_channels, return_diagnostics=True))
             split_bandwidths = bandwidths
-        l1 = torch.stack([torch.as_tensor(actions[index]["l1"], dtype=torch.long,
-                                           device=self.device) for index in indices])
-        l2 = torch.stack([torch.as_tensor(actions[index]["l2"], dtype=torch.long,
-                                           device=self.device) for index in indices])
-        split_lp, split_entropy, _ = self.split_head.evaluate_actions(encoded, clusters, split_bandwidths, l1, l2)
+        if self.policy_schema != "hierarchical_rgs_v4":
+            split_lp, split_entropy, _ = self.split_head.evaluate_actions(
+                encoded, clusters, split_bandwidths, l1, l2)
         values = self._aggregate_token_values(self.value_head, encoded)
         outputs = []
         for row, index in enumerate(indices):
@@ -679,6 +853,8 @@ class MATAgent(BaseAgent):
         return result
 
     def update_policy(self, rewards, next_states, dones, **kwargs):
+        if self.physics_only:
+            raise ValueError("physics_only disables PPO updates")
         names = ("states", "actions", "edge_states", "next_edge_states", "available_migs", "policy_infos", "station_ids", "epochs")
         data = {name: kwargs.get(name) for name in names}
         if any(data[name] is None for name in names) or not len(data["states"]):
@@ -694,7 +870,8 @@ class MATAgent(BaseAgent):
         if self.bandwidth_policy == "hybrid_water_filling" and "bandwidth" in actor_components:
             raise ValueError("hybrid bandwidth is deterministic and cannot be a PPO actor component")
         self._active_actor_components = frozenset(actor_components)
-        one_step = bool(kwargs.get("one_step_advantage", False))
+        one_step = bool(kwargs.get(
+            "one_step_advantage", self.policy_schema == "hierarchical_rgs_v4"))
         advantages, returns, td_targets, td_residuals = self._compute_gae(
             rewards, next_states, dones, data["edge_states"], data["next_edge_states"], data["policy_infos"],
             data["station_ids"], data["epochs"], trajectory_ids, one_step=one_step)
@@ -709,8 +886,18 @@ class MATAgent(BaseAgent):
         module_pre = {"encoder": [], "value_head": [], "decoder": [], "bandwidth_head": [], "split_head": []}
         module_post = {key: [] for key in module_pre}
         target_before = [p.detach().clone() for p in list(self.target_encoder.parameters()) + list(self.target_value_head.parameters())]
-        channel_head_before = self.device_decoder.bandwidth_channel_head.weight.detach().clone()
-        bandwidth_head_before = [parameter.detach().clone() for parameter in self.device_decoder.bandwidth_mean_head.parameters()]
+        partition_residual_before = ([parameter.detach().clone()
+                                      for parameter in self.device_decoder.residual_head.parameters()]
+                                     if self.policy_schema == "hierarchical_rgs_v4" else [])
+        split_residual_before = ([parameter.detach().clone()
+                                  for parameter in self.split_head.residual_head.parameters()]
+                                 if self.policy_schema == "hierarchical_rgs_v4" else [])
+        legacy_bandwidth_decoder = hasattr(self.device_decoder, "bandwidth_channel_head")
+        channel_head_before = (self.device_decoder.bandwidth_channel_head.weight.detach().clone()
+                               if legacy_bandwidth_decoder else None)
+        bandwidth_head_before = ([parameter.detach().clone()
+                                  for parameter in self.device_decoder.bandwidth_mean_head.parameters()]
+                                 if legacy_bandwidth_decoder else [])
         actor_parameters = (list(self.encoder.parameters()) + list(self.device_decoder.parameters()) +
                             ([] if self.bandwidth_head is None else list(self.bandwidth_head.parameters())) +
                             list(self.split_head.parameters()))
@@ -792,11 +979,14 @@ class MATAgent(BaseAgent):
             rollout_means.extend(means.tolist())
         result["bandwidth_latent_mean_abs"] = float(np.mean(np.abs(rollout_means))) if rollout_means else 0.0
         result["bandwidth_latent_mean_std"] = float(np.std(rollout_means)) if rollout_means else 0.0
-        result["bandwidth_channel_weight"] = float(self.device_decoder.bandwidth_channel_head.weight.item())
-        result["bandwidth_channel_weight_drift"] = float(
+        result["bandwidth_channel_weight"] = (float(self.device_decoder.bandwidth_channel_head.weight.item())
+                                              if legacy_bandwidth_decoder else 0.0)
+        result["bandwidth_channel_weight_drift"] = (float(
             (self.device_decoder.bandwidth_channel_head.weight.detach() - channel_head_before).abs().max())
-        head_drift = [float((after.detach() - before).float().norm()) for after, before in zip(
+            if legacy_bandwidth_decoder else 0.0)
+        head_drift = ([float((after.detach() - before).float().norm()) for after, before in zip(
             self.device_decoder.bandwidth_mean_head.parameters(), bandwidth_head_before)]
+            if legacy_bandwidth_decoder else [])
         result["bandwidth_mean_head_parameter_drift"] = float(np.sqrt(np.square(head_drift).sum()))
         if self.bandwidth_head is None:
             result["bandwidth_physical_weight"] = 0.0
@@ -816,6 +1006,27 @@ class MATAgent(BaseAgent):
         result["bandwidth_alpha_max"] = float(alphas.max())
         result["bandwidth_context_score_std"] = float(context_scores.std())
         result["bandwidth_physical_score_std"] = float(physical_scores.std())
+        cluster_priors = np.concatenate([
+            np.asarray(info["cluster_prior_scores"]).reshape(-1)
+            for info in data["policy_infos"]])
+        split_priors = np.concatenate([
+            np.asarray(info["split_prior_logits"]).reshape(-1)
+            for info in data["policy_infos"]])
+        result["cluster_physics_prior_std"] = float(cluster_priors.std())
+        result["split_physics_prior_std"] = float(split_priors.std())
+        partition_drift = [float((after.detach() - before).float().norm())
+                           for after, before in zip(
+                               getattr(self.device_decoder, "residual_head", nn.Module()).parameters(),
+                               partition_residual_before)]
+        split_drift = [float((after.detach() - before).float().norm())
+                       for after, before in zip(
+                           getattr(self.split_head, "residual_head", nn.Module()).parameters(),
+                           split_residual_before)]
+        result["partition_residual_parameter_drift"] = float(
+            np.sqrt(np.square(partition_drift).sum())) if partition_drift else 0.0
+        result["split_residual_parameter_drift"] = float(
+            np.sqrt(np.square(split_drift).sum())) if split_drift else 0.0
+        result.update(self.runtime_profile.diagnostics())
         result["online_value_mean"] = float(updated_values.mean())
         result["target_value_mean"] = float(old_target_values.mean())
         result["online_target_value_drift"] = float(np.mean(np.abs(updated_values - old_target_values)))

@@ -8,13 +8,13 @@ class ClusterSFLAgent(BaseAgent):
     """Label-aware worker clustering, top-worker selection and feature compression."""
 
     DEFAULT_PAYLOAD_BYTES = np.asarray(
-        [49152.0, 1048576.0, 1048576.0, 524288.0, 262144.0, 131072.0], dtype=np.float64)
+        [12288.0, 262144.0, 262144.0, 131072.0, 65536.0, 32768.0, 2048.0], dtype=np.float64)
 
     def __init__(self, num_cut_layers=7, fixed_l1=3, fixed_l2=4,
                  max_workers_per_cluster=5, minimum_compression_ratio=0.05,
                  payload_bytes_by_l1=None, max_local_frequency=4):
         super().__init__(agent_name="PaperAdapted-ClusterSFL")
-        if num_cut_layers < 2 or not 0 <= fixed_l1 < fixed_l2 < num_cut_layers:
+        if num_cut_layers < 3 or not 1 <= fixed_l1 < fixed_l2 < num_cut_layers:
             raise ValueError("invalid fixed ClusterSFL split")
         if max_workers_per_cluster < 1 or not 0.0 < minimum_compression_ratio <= 1.0:
             raise ValueError("invalid cluster capacity or compression floor")
@@ -71,17 +71,26 @@ class ClusterSFLAgent(BaseAgent):
         share = 1.0 / count
         efficiency = np.maximum(np.log2(1.0 + 10.0 * np.maximum(state[:, 0], 0.0)), 1e-9)
         compute = 1e-3 * (self.fixed_l1 + 1.0) / np.maximum(state[:, 1], 1e-6)
-        tx_full = (8.0 * self.payload_bytes_by_l1[self.fixed_l1]
+        # Compression changes the l1 boundary only; l2 remains present in both
+        # directions.  The factor two accounts for symmetric UL and DL.
+        l1_payload = self.payload_bytes_by_l1[self.fixed_l1]
+        l2_payload = self.payload_bytes_by_l1[self.fixed_l2]
+        tx_full = (16.0 * (l1_payload + l2_payload)
                    / np.maximum(share * bandwidth_hz * efficiency, 1e-12))
         ratios = np.ones(count, dtype=np.float64)
         cluster_time = {}
         for cluster in np.unique(clusters):
             members = np.flatnonzero(clusters == cluster)
             target = float(np.min(compute[members] + tx_full[members]))
+            fixed_l2_tx = 16.0 * l2_payload / np.maximum(
+                share * bandwidth_hz * efficiency[members], 1e-12)
+            scalable_l1_tx = 16.0 * l1_payload / np.maximum(
+                share * bandwidth_hz * efficiency[members], 1e-12)
             ratios[members] = np.clip(
-                (target - compute[members]) / np.maximum(tx_full[members], 1e-12),
+                (target - compute[members] - fixed_l2_tx) / np.maximum(scalable_l1_tx, 1e-12),
                 self.minimum_compression_ratio, 1.0)
-            cluster_time[int(cluster)] = float(np.max(compute[members] + ratios[members] * tx_full[members]))
+            cluster_time[int(cluster)] = float(np.max(
+                compute[members] + fixed_l2_tx + ratios[members] * scalable_l1_tx))
         slowest = max(cluster_time.values())
         frequency = {cluster: int(np.clip(np.floor(slowest / max(delay, 1e-12)), 1,
                                           self.max_local_frequency))
@@ -104,8 +113,10 @@ class ClusterSFLAgent(BaseAgent):
             members = np.flatnonzero(clusters == cluster)
             top_workers[members[np.argmax(state[members, 0])]] = True
         volumes = np.ones(count, dtype=np.float64) if data_volumes is None else np.asarray(data_volumes, dtype=np.float64)
-        aggregation = np.asarray([
-            volumes[index] * frequencies[int(clusters[index])] for index in range(count)], dtype=np.float64)
+        # The paper control remains available as a diagnostic, but the primary
+        # fixed-round comparison gives every active client the same mini-batch
+        # budget. Aggregation therefore follows samples actually consumed.
+        aggregation = np.ones(count, dtype=np.float64)
         cloud_mass = float(aggregation.sum())
         aggregation /= max(aggregation.sum(), 1e-12)
         return {

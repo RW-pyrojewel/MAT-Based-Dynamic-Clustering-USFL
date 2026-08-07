@@ -30,9 +30,11 @@ class MATChannelConditioningTests(unittest.TestCase):
         prepared = explicit._prepare_client_state(self.state).squeeze(0).cpu().numpy()
         expected = np.log1p(10.0 * self.state[:, 0]) / np.log(11.0)
         np.testing.assert_allclose(prepared[:, 0], expected, rtol=1e-6)
-        np.testing.assert_allclose(prepared[:, 1], self.state[:, 1] / 2.5)
+        self.assertEqual(prepared.shape, (10, 1))
 
-        legacy = MATAgent(state_dim=6, hidden_dim=32, channel_conditioning="legacy")
+        legacy = MATAgent(
+            state_dim=6, hidden_dim=32, channel_conditioning="legacy",
+            policy_schema="legacy_v3", policy_state_mode="legacy_full")
         np.testing.assert_allclose(
             legacy._prepare_client_state(self.state).squeeze(0).cpu().numpy(),
             self.state,

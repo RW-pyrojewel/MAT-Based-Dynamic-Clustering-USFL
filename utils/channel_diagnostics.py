@@ -75,8 +75,9 @@ def oracle_bandwidth(required_airtimes, min_share=0.01):
 
 
 def offset_aware_oracle_bandwidth(required_airtimes, cluster_choices, cluster_compute_delays,
-                                  bandwidth_hz, min_share=0.01, iterations=96):
-    """Minimize max_i(compute[cluster_i] + airtime_i / (B * bandwidth_i))."""
+                                  bandwidth_hz, min_share=0.01, iterations=96,
+                                  client_offsets=None):
+    """Minimize max_i(compute[cluster_i]+offset_i+airtime_i/(B*b_i))."""
     costs = np.asarray(required_airtimes, dtype=np.float64)
     clusters = np.asarray(cluster_choices, dtype=np.int64)
     if costs.ndim != 1 or clusters.shape != costs.shape or len(costs) == 0:
@@ -86,6 +87,11 @@ def offset_aware_oracle_bandwidth(required_airtimes, cluster_choices, cluster_co
     if min_share < 0.0 or len(costs) * min_share >= 1.0:
         raise ValueError("minimum bandwidth share is infeasible")
     compute = np.asarray([float(cluster_compute_delays.get(int(cluster), 0.0)) for cluster in clusters], dtype=np.float64)
+    if client_offsets is not None:
+        offsets = np.asarray(client_offsets, dtype=np.float64)
+        if offsets.shape != costs.shape or not np.isfinite(offsets).all() or (offsets < 0.0).any():
+            raise ValueError("client offsets must be a matching finite non-negative vector")
+        compute = compute + offsets
     if not np.isfinite(compute).all() or (compute < 0.0).any():
         raise ValueError("cluster compute delays must be finite and non-negative")
     equal = np.full(len(costs), 1.0 / len(costs), dtype=np.float64)
